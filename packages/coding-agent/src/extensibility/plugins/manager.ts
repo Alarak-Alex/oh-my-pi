@@ -15,8 +15,9 @@ import {
 import { JSONC } from "bun";
 import { resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import { loadExtensions } from "../extensions/loader";
-import { runBunCli } from "./bun-cli";
 import { refreshBunGitCache } from "./bun-git-cache";
+import { runBunCli } from "./bun-cli";
+import { linkPluginDirectory } from "./directory-link";
 import { type GitSource, parseGitUrl } from "./git-url";
 import { resolvePluginManifestEntries } from "./loader";
 import { getInstalledPluginsRegistryPath, readInstalledPluginsRegistry } from "./marketplace/registry";
@@ -144,14 +145,6 @@ type PluginPackageSnapshot =
 			readonly backupRoot: string;
 			readonly backupPath: string;
 	  };
-
-/**
- * Point `linkPath` at the directory `target`. Windows gets a junction, which
- * needs no privilege; a plain directory symlink EPERMs outside developer mode.
- */
-async function linkDirectory(target: string, linkPath: string): Promise<void> {
-	await fs.promises.symlink(target, linkPath, process.platform === "win32" ? "junction" : "dir");
-}
 
 interface RuntimePackageJson {
 	name?: unknown;
@@ -454,7 +447,7 @@ export class PluginManager {
 		}
 		await fs.promises.mkdir(path.dirname(snapshot.packagePath), { recursive: true });
 		if (snapshot.kind === "link") {
-			await linkDirectory(snapshot.target, snapshot.packagePath);
+			await linkPluginDirectory(snapshot.target, snapshot.packagePath);
 		} else {
 			await fs.promises.cp(snapshot.backupPath, snapshot.packagePath, { recursive: true, verbatimSymlinks: true });
 		}
@@ -922,7 +915,7 @@ export class PluginManager {
 		// Whatever is there — a stale link, or a real directory from a git install.
 		await fs.promises.rm(linkPath, { recursive: true, force: true });
 
-		await linkDirectory(absolutePath, linkPath);
+		await linkPluginDirectory(absolutePath, linkPath);
 
 		const manifest: PluginManifest = pkg.omp || pkg.pi || { version: pkg.version };
 		manifest.version = pkg.version;
