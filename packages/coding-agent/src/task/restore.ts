@@ -3,8 +3,8 @@
  * it ended ({@link restoreSession}): the turn it was in
  * ({@link AgentSession.restoreInterruptedTurn}) and the subagents it was running.
  *
- * A parent-process start marker limits recovery to transcripts touched by its
- * immediately preceding process; older interrupted work is not restarted.
+ * The parent's latest activation before this restore limits recovery to
+ * subagents active since that boundary; older interrupted work is not restarted.
  * Every persisted subagent transcript under the session ({@link collectSubSessions})
  * that its process left mid-turn ({@link hasRestorableTurn}), was not killed (no
  * tombstone) and can be revived (a `session_init` contract, not isolated) runs one
@@ -20,9 +20,8 @@ import { AsyncJobError } from "../async";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
-import { hasRestorableTurn } from "../session/exit-diagnostics";
+import { hasRestorableTurn, SESSION_ACTIVATION_CUSTOM_TYPE } from "../session/exit-diagnostics";
 import type { SessionEntry } from "../session/session-entries";
-import type { SessionManager } from "../session/session-manager";
 import { extractSessionInit } from "../session/session-manager";
 import { collectSubSessions } from "../session/sub-sessions";
 import type { EventBus } from "../utils/event-bus";
@@ -31,18 +30,11 @@ import { persistedAgentDefinition } from "./persisted-revive";
 import { formatTaskResultSummary } from "./result-summary";
 import { cfgTaskMaxRuntimeMs } from "./settings";
 
-const SESSION_PROCESS_START = "session_process_start";
-
-/** Mark a CLI process opening a persisted root session before it can start new work. */
-export function recordSessionProcessStart(manager: SessionManager): void {
-	if (manager.getSessionFile()) manager.appendCustomEntry(SESSION_PROCESS_START);
-}
-
-function previousProcessStart(entries: readonly SessionEntry[]): number | undefined {
+function previousActivationStart(entries: readonly SessionEntry[]): number | undefined {
 	let current = false;
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
-		if (entry.type !== "custom" || entry.customType !== SESSION_PROCESS_START) continue;
+		if (entry.type !== "custom" || entry.customType !== SESSION_ACTIVATION_CUSTOM_TYPE) continue;
 		if (!current) {
 			current = true;
 			continue;
@@ -98,9 +90,9 @@ async function restoreSubagents(session: AgentSession, options: RestoreOptions):
 	const sessionFile = session.sessionManager.getSessionFile();
 	const manager = session.asyncJobManager;
 	if (!sessionFile || !manager) return [];
-	const previousStart = previousProcessStart(session.sessionManager.getEntries());
+	const previousStart = previousActivationStart(session.sessionManager.getEntries());
 	if (previousStart === undefined) {
-		logger.debug("Previous process start unknown; subagents not restored");
+		logger.debug("Previous session activation unknown; subagents not restored");
 		return [];
 	}
 	const registry = AgentRegistry.global();

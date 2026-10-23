@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Message } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { getAgentTombstonePath } from "@oh-my-pi/pi-coding-agent/registry/agent-tombstone";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { recordSessionActivation } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import { recordSessionProcessStart, restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
+import { restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
 import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -66,12 +72,18 @@ async function writeSubagent(mainFile: string, cwd: string, id: string, messages
 
 describe("restoreSession (omp --restore)", () => {
 	const ids = ["Cut", "Done", "Killed", "Fresh"];
+	let root: AgentSession | undefined;
+	let authStorage: AuthStorage | undefined;
 	let tempDir: TempDir | undefined;
 	let manager: AsyncJobManager | undefined;
 
 	afterEach(async () => {
 		setSystemTime();
 		vi.restoreAllMocks();
+		await root?.dispose();
+		root = undefined;
+		authStorage?.close();
+		authStorage = undefined;
 		for (const id of ids) AgentRegistry.global().unregister(id);
 		await manager?.dispose({ timeoutMs: 1000 });
 		manager = undefined;
@@ -79,12 +91,55 @@ describe("restoreSession (omp --restore)", () => {
 		tempDir = undefined;
 	});
 
+	async function createRoot(sessionManager: SessionManager): Promise<AgentSession> {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected a bundled test model");
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		manager = new AsyncJobManager({});
+		root = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn: createMockModel({ handler: () => ({ content: ["done"] }) }).stream,
+			}),
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false, "retry.enabled": false }),
+			modelRegistry: new ModelRegistry(authStorage),
+			ownedAsyncJobManager: manager,
+		});
+		return root;
+	}
+
+	async function recoverSubagents(): Promise<string[]> {
+		if (!root) throw new Error("Expected a root agent session");
+		vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockResolvedValue({
+			index: 0,
+			id: "Fresh",
+			agent: "Fresh",
+			agentSource: "user",
+			task: "Fresh task",
+			exitCode: 0,
+			output: "done",
+			stderr: "",
+			truncated: false,
+			durationMs: 1,
+			tokens: 0,
+			requests: 1,
+		});
+		const outcome = await restoreSession(root);
+		const job = manager?.getJob("Fresh");
+		if (!job) throw new Error("Expected restored subagent job");
+		await job.promise;
+		return outcome.subagents;
+	}
+
 	it("goes on with each subagent cut off mid-turn as a job its parent receives, not with finished or killed ones", async () => {
 		setSystemTime(new Date("2026-10-09T00:00:00Z"));
 		tempDir = TempDir.createSync("@pi-restore-subagents-");
 		const cwd = tempDir.path();
 		const main = SessionManager.create(cwd, path.join(cwd, "sessions"));
-		recordSessionProcessStart(main);
+		recordSessionActivation(main);
 		setSystemTime();
 		main.appendMessage({ role: "user", content: "fan out", timestamp: Date.now() });
 		const mainFile = main.getSessionFile();
@@ -93,7 +148,7 @@ describe("restoreSession (omp --restore)", () => {
 		await writeSubagent(mainFile, cwd, "Done", finished);
 		const killed = await writeSubagent(mainFile, cwd, "Killed", cutOff);
 		await fs.writeFile(getAgentTombstonePath(killed), "");
-		recordSessionProcessStart(main);
+		recordSessionActivation(main);
 		await main.close();
 
 		manager = new AsyncJobManager({});
@@ -141,15 +196,15 @@ describe("restoreSession (omp --restore)", () => {
 		const main = SessionManager.create(cwd, path.join(cwd, "sessions"));
 		const mainFile = main.getSessionFile();
 		if (!mainFile) throw new Error("Expected a persisted session file");
-		recordSessionProcessStart(main);
+		recordSessionActivation(main);
 		await writeSubagent(mainFile, cwd, "Cut", cutOff);
 		setSystemTime(new Date("2026-10-11T00:00:00Z"));
-		recordSessionProcessStart(main);
+		recordSessionActivation(main);
 		await writeSubagent(mainFile, cwd, "Done", finished);
 		setSystemTime(new Date("2026-10-11T00:01:00Z"));
 		await writeSubagent(mainFile, cwd, "Fresh", cutOff);
 		setSystemTime(new Date("2026-10-22T00:00:00Z"));
-		recordSessionProcessStart(main);
+		recordSessionActivation(main);
 		await main.close();
 		setSystemTime();
 
@@ -180,6 +235,49 @@ describe("restoreSession (omp --restore)", () => {
 		expect(followUp).toHaveBeenCalledTimes(1);
 	});
 
+	it("restores a cut-off subagent from a session created with /new in this process", async () => {
+		tempDir = TempDir.createSync("@pi-restore-new-session-");
+		const cwd = tempDir.path();
+		const current = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		recordSessionActivation(current);
+		const active = await createRoot(current);
+		expect(await active.newSession()).toBe(true);
+		const newFile = current.getSessionFile();
+		if (!newFile) throw new Error("Expected a persisted new session");
+
+		setSystemTime(new Date(Date.now() + 60_000));
+		await writeSubagent(newFile, cwd, "Fresh", cutOff);
+		setSystemTime(new Date(Date.now() + 60_000));
+		recordSessionActivation(current);
+
+		expect(await recoverSubagents()).toEqual(["Fresh"]);
+	});
+
+	it("restores only work started after switching back to a previously abandoned session", async () => {
+		tempDir = TempDir.createSync("@pi-restore-switch-session-");
+		const cwd = tempDir.path();
+		setSystemTime(new Date("2026-10-09T00:00:00Z"));
+		const target = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		recordSessionActivation(target);
+		const targetFile = target.getSessionFile();
+		if (!targetFile) throw new Error("Expected a persisted target session");
+		setSystemTime(new Date("2026-10-10T00:00:00Z"));
+		await writeSubagent(targetFile, cwd, "Cut", cutOff);
+		await target.close();
+
+		const current = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		recordSessionActivation(current);
+		const active = await createRoot(current);
+		setSystemTime(new Date("2026-10-11T00:00:00Z"));
+		expect(await active.switchSession(targetFile)).toBe(true);
+		setSystemTime(new Date("2026-10-11T00:01:00Z"));
+		await writeSubagent(targetFile, cwd, "Fresh", cutOff);
+		setSystemTime(new Date("2026-10-22T00:00:00Z"));
+		recordSessionActivation(current);
+
+		expect(await recoverSubagents()).toEqual(["Fresh"]);
+	});
+
 	it("does not guess which legacy subagents were running without a recorded process boundary", async () => {
 		tempDir = TempDir.createSync("@pi-restore-legacy-");
 		const cwd = tempDir.path();
@@ -187,7 +285,7 @@ describe("restoreSession (omp --restore)", () => {
 		const mainFile = main.getSessionFile();
 		if (!mainFile) throw new Error("Expected a persisted session file");
 		await writeSubagent(mainFile, cwd, "Cut", cutOff);
-		recordSessionProcessStart(main);
+		recordSessionActivation(main);
 		await main.close();
 
 		manager = new AsyncJobManager({});

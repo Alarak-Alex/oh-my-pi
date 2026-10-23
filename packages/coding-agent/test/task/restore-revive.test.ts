@@ -17,9 +17,10 @@ import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
+import { recordSessionActivation } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
-import { recordSessionProcessStart, restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
+import { restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
 import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
@@ -82,7 +83,7 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 	// inside the subagent's `read` call: no tool result, no exit record.
 	setSystemTime(new Date("2026-10-09T00:00:00Z"));
 	const main = SessionManager.create(cwd, path.join(root, "sessions"));
-	recordSessionProcessStart(main);
+	recordSessionActivation(main);
 	setSystemTime();
 	main.appendMessage({ role: "user", content: "fan out", timestamp: Date.now() });
 	const mainFile = main.getSessionFile();
@@ -123,7 +124,7 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 		timestamp: Date.now(),
 	});
 	await child.close();
-	recordSessionProcessStart(main);
+	recordSessionActivation(main);
 	await main.close();
 
 	const authStorage = createInMemoryAuthStorage();
