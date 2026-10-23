@@ -166,8 +166,9 @@ import type { CompactOptions, ContextUsage } from "../extensibility/extensions/t
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import {
-	buildSkillPromptMessage,
 	type BuiltSkillPromptMessage,
+	loadSkillPromptBody,
+	renderSkillPromptMessage,
 	type Skill,
 	type SkillPromptInput,
 	type SkillWarning,
@@ -10095,12 +10096,21 @@ export class AgentSession implements SettingsScope {
 		return this.#tools.skills;
 	}
 
-	/** Render a user-invoked skill with model mentions authorized in this session. */
+	/** Load a user-invoked skill and authorize model tags in its arguments. */
 	async buildUserSkillPrompt(
 		skill: Pick<Skill, "name" | "filePath" | "baseDir">,
 		input: SkillPromptInput,
 	): Promise<BuiltSkillPromptMessage> {
-		return buildSkillPromptMessage(skill, input, "user", {
+		return this.renderUserSkillPrompt(skill, input, await loadSkillPromptBody(skill));
+	}
+
+	/** Render an already-loaded skill only after the invoking submission is still current. */
+	renderUserSkillPrompt(
+		skill: Pick<Skill, "name" | "filePath" | "baseDir">,
+		input: SkillPromptInput,
+		body: string,
+	): BuiltSkillPromptMessage {
+		return renderSkillPromptMessage(skill, input, body, "user", {
 			expandUserArgs: args => this.#modelMentions.expandMentions(args),
 		});
 	}

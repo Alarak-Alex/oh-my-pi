@@ -8,6 +8,11 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { dispatchRpcSkillPrompt } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
+import {
+	RpcExtensionUserMessageTracker,
+	RpcPromptResults,
+} from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-prompt-results";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -249,6 +254,50 @@ describe("model mentions", () => {
 			expect(
 				queued.some(message => message.role === "custom" && message.customType === "session-agent-notice"),
 			).toBe(true);
+		} finally {
+			await agentSession.dispose();
+			await removeWithRetries(dir);
+		}
+	});
+
+	test("a canceled RPC skill never authorizes its tagged model", async () => {
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: models[0], systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: createMockModel({ responses: [] }).stream,
+		});
+		const agentSession = new AgentSession({
+			agent,
+			sessionManager: session,
+			modelRegistry: registry,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+		});
+		const { dir, skill } = await createTaggedSkill();
+		const results = new RpcPromptResults(
+			{ isStreaming: false, hasAdmittedSubmission: false, queuedMessageCount: 0, hasPendingAsyncWork: () => false },
+			() => {},
+		);
+		try {
+			const outcome = await dispatchRpcSkillPrompt({
+				ticket: results.begin("cancelled-skill"),
+				results,
+				session: {
+					skillsSettings: { enableSkillCommands: true },
+					skills: [{ ...skill, description: "Tagged skill", source: "test" }],
+					buildUserSkillPrompt: agentSession.buildUserSkillPrompt.bind(agentSession),
+					renderUserSkillPrompt: agentSession.renderUserSkillPrompt.bind(agentSession),
+					promptCustomMessage: agentSession.promptCustomMessage.bind(agentSession),
+				},
+				message: "/skill:test ask ^b/y to help",
+				streamingBehavior: "steer",
+				onError: () => {},
+				extensionUserMessageTracker: new RpcExtensionUserMessageTracker(),
+				isCurrent: () => false,
+			});
+
+			expect(outcome).toBe("cancelled");
+			expect(readModelMentions(session.getBranch())).toEqual([]);
+			expect(agentSession.getSessionAgents()).toEqual([]);
 		} finally {
 			await agentSession.dispose();
 			await removeWithRetries(dir);

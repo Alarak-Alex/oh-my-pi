@@ -573,6 +573,7 @@ describe("AgentSession queued steer delivery", () => {
 			await tryRunRpcSkillCommand(
 				{
 					buildUserSkillPrompt: session.buildUserSkillPrompt.bind(session),
+					renderUserSkillPrompt: session.renderUserSkillPrompt.bind(session),
 					skillsSettings: { enableSkillCommands: true },
 					skills: [
 						{
@@ -839,6 +840,7 @@ describe("AgentSession queued steer delivery", () => {
 				await tryRunRpcSkillCommand(
 					{
 						buildUserSkillPrompt: session.buildUserSkillPrompt.bind(session),
+						renderUserSkillPrompt: session.renderUserSkillPrompt.bind(session),
 						skillsSettings: { enableSkillCommands: true },
 						skills: [
 							{
@@ -893,6 +895,7 @@ describe("AgentSession queued steer delivery", () => {
 				void tryRunRpcSkillCommand(
 					{
 						buildUserSkillPrompt: session.buildUserSkillPrompt.bind(session),
+						renderUserSkillPrompt: session.renderUserSkillPrompt.bind(session),
 						skillsSettings: { enableSkillCommands: true },
 						skills: [
 							{

@@ -668,17 +668,22 @@ export type SkillInvocationKind = "user" | "autoload";
 /** What the user typed around a skill token: `args` feed the template, `prompt` only the transcript. */
 export type SkillPromptInput = Pick<ParsedSkillInvocation, "args"> & Partial<Pick<ParsedSkillInvocation, "prompt">>;
 
-/** Render a skill from its static template; user arguments can be expanded without changing transcript metadata. */
-export async function buildSkillPromptMessage(
-	skill: Pick<Skill, "name" | "filePath" | "baseDir">,
-	input: SkillPromptInput,
-	invocation: SkillInvocationKind = "user",
-	options?: { expandUserArgs?: (args: string) => string },
-): Promise<BuiltSkillPromptMessage> {
+/** Read a skill's instruction body before rendering user-provided arguments. */
+export async function loadSkillPromptBody(skill: Pick<Skill, "filePath">): Promise<string> {
 	const content = await Bun.file(skill.filePath).text();
 	// Only the body is used: keep HTML comments (`repair: false`) and leave YAML
 	// diagnostics to the loader, which already parsed this frontmatter.
-	const body = parseFrontmatter(content, { source: skill.filePath, repair: false, level: "off" }).body.trim();
+	return parseFrontmatter(content, { source: skill.filePath, repair: false, level: "off" }).body.trim();
+}
+
+/** Render a loaded skill with user arguments substituted by its static template. */
+export function renderSkillPromptMessage(
+	skill: Pick<Skill, "name" | "filePath" | "baseDir">,
+	input: SkillPromptInput,
+	body: string,
+	invocation: SkillInvocationKind = "user",
+	options?: { expandUserArgs?: (args: string) => string },
+): BuiltSkillPromptMessage {
 	const trimmedArgs = input.args.trim();
 	const renderedArgs =
 		invocation === "user" && trimmedArgs ? (options?.expandUserArgs?.(trimmedArgs) ?? trimmedArgs) : trimmedArgs;
@@ -715,4 +720,13 @@ export async function buildSkillPromptMessage(
 			lineCount: body ? body.split("\n").length : 0,
 		},
 	};
+}
+
+/** Load and render a skill prompt without authorizing session-specific model mentions. */
+export async function buildSkillPromptMessage(
+	skill: Pick<Skill, "name" | "filePath" | "baseDir">,
+	input: SkillPromptInput,
+	invocation: SkillInvocationKind = "user",
+): Promise<BuiltSkillPromptMessage> {
+	return renderSkillPromptMessage(skill, input, await loadSkillPromptBody(skill), invocation);
 }
