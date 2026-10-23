@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as os from "node:os";
+import * as path from "node:path";
+import { TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
 import * as pyKernel from "@oh-my-pi/pi-coding-agent/eval/py/kernel";
@@ -99,6 +102,26 @@ describe("EvalTool language dispatch", () => {
 		await expect(execution).rejects.toThrow(reason);
 
 		expect(probeSpy.mock.calls[0]?.[1]).toMatchObject({ timeoutMs: 1_000 });
+	});
+
+	it("shortens home paths and bounds a failed Python probe list in the eval error", async () => {
+		const home = os.homedir();
+		const reason = `No working Python interpreter found. Tried: ${path.join(home, ".local", "share", "mise", "shims", "python")} (exit code 1);\t${Array.from({ length: 40 }, (_, index) => `/opt/broken-${index}/python (exit code 1)`).join("; ")}`;
+		vi.spyOn(evalIndex.pythonBackend, "checkAvailability").mockResolvedValue({ ok: false, reason });
+
+		let message = "";
+		try {
+			await new EvalTool(makeSession()).execute("call-py-probe-failure", { language: "py", code: "never runs" });
+		} catch (err) {
+			if (err instanceof Error) message = err.message;
+		}
+
+		expect(message).toContain("~/.local/share/mise/shims/python (exit code 1)");
+		expect(message).not.toContain(home);
+		expect(message).not.toContain("\t");
+		const lines = message.split("\n");
+		expect(lines).toHaveLength(2);
+		expect(Bun.stringWidth(lines[1])).toBeLessThanOrEqual(TRUNCATE_LENGTHS.RECAP);
 	});
 
 	it("preserves caller cancellation during py availability probing", async () => {
