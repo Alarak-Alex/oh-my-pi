@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -17,6 +20,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/model-mentions";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 function model(provider: string, id: string, name: string): Model {
 	return buildModel({
@@ -31,6 +35,13 @@ function model(provider: string, id: string, name: string): Model {
 		contextWindow: 8192,
 		maxTokens: 1024,
 	});
+}
+
+async function createTaggedSkill() {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-model-mention-skill-"));
+	const filePath = path.join(dir, "SKILL.md");
+	await Bun.write(filePath, "Skill body: ^c/w");
+	return { dir, skill: { name: "test", filePath, baseDir: dir } };
 }
 
 const models = [model("a", "x", "X One"), model("b", "y", "Y"), model("c", "w", 'W "Three"')];
@@ -174,12 +185,14 @@ describe("model mentions", () => {
 			modelRegistry: registry,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 		});
+		const { dir, skill } = await createTaggedSkill();
 		try {
+			const built = await agentSession.buildUserSkillPrompt(skill, { args: "ask ^b/y to help" });
 			await agentSession.promptCustomMessage({
 				customType: SKILL_PROMPT_MESSAGE_TYPE,
-				content: "Skill body: ^c/w\n\n---\nUser: ask ^b/y to help",
+				content: built.message,
 				display: true,
-				details: { name: "test", path: "/skills/test/SKILL.md", args: "ask ^b/y to help", lineCount: 1 },
+				details: built.details,
 				attribution: "user",
 			});
 
@@ -193,6 +206,7 @@ describe("model mentions", () => {
 			expect(turn).toContain("Now available:");
 		} finally {
 			await agentSession.dispose();
+			await removeWithRetries(dir);
 		}
 	});
 
@@ -208,14 +222,16 @@ describe("model mentions", () => {
 			modelRegistry: registry,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 		});
+		const { dir, skill: taggedSkill } = await createTaggedSkill();
 		const image = { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=" };
 		try {
+			const built = await agentSession.buildUserSkillPrompt(taggedSkill, { args: "ask ^b/y to help" });
 			await agentSession.promptCustomMessage(
 				{
 					customType: SKILL_PROMPT_MESSAGE_TYPE,
-					content: [{ type: "text", text: "Skill body: ^c/w\n\n---\nUser: ask ^b/y to help" }, image],
+					content: [{ type: "text", text: built.message }, image],
 					display: true,
-					details: { name: "test", path: "/skills/test/SKILL.md", args: "ask ^b/y to help", lineCount: 1 },
+					details: built.details,
 					attribution: "user",
 				},
 				{ streamingBehavior: "steer", queueOnly: true },
@@ -227,15 +243,15 @@ describe("model mentions", () => {
 				(message): message is CustomMessage =>
 					message.role === "custom" && message.customType === SKILL_PROMPT_MESSAGE_TYPE,
 			);
-			expect(skill?.content).toEqual([
-				{ type: "text", text: 'Skill body: ^c/w\n\n---\nUser: ask <model agent="m1" name="Y"/> to help' },
-				image,
-			]);
+			expect(skill?.content).toEqual([{ type: "text", text: built.message }, image]);
+			expect(built.message).toContain('User: ask <model agent="m1" name="Y"/> to help');
+			expect(built.message).toContain("Skill body: ^c/w");
 			expect(
 				queued.some(message => message.role === "custom" && message.customType === "session-agent-notice"),
 			).toBe(true);
 		} finally {
 			await agentSession.dispose();
+			await removeWithRetries(dir);
 		}
 	});
 
