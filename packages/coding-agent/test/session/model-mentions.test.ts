@@ -7,6 +7,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { expandModelMentionTags } from "@oh-my-pi/pi-tui/prompt/model-mention-syntax";
 import {
@@ -154,6 +155,85 @@ describe("model mentions", () => {
 				message => message.role === "custom" && message.customType === "session-agent-notice",
 			);
 			expect(notices).toHaveLength(1);
+		} finally {
+			await agentSession.dispose();
+		}
+	});
+
+	test("user-invoked skill arguments authorize model agents in the same turn", async () => {
+		vi.spyOn(registry, "getApiKey").mockResolvedValue("test-key");
+		const mock = createMockModel({ responses: [{ content: ["Done"] }] });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: models[0], systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		});
+		const agentSession = new AgentSession({
+			agent,
+			sessionManager: session,
+			modelRegistry: registry,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+		});
+		try {
+			await agentSession.promptCustomMessage({
+				customType: SKILL_PROMPT_MESSAGE_TYPE,
+				content: "Skill body: ^c/w\n\n---\nUser: ask ^b/y to help",
+				display: true,
+				details: { name: "test", path: "/skills/test/SKILL.md", args: "ask ^b/y to help", lineCount: 1 },
+				attribution: "user",
+			});
+
+			expect(readModelMentions(session.getBranch())).toEqual([{ agent: "m1", selector: "b/y", name: "Y" }]);
+			expect(agentSession.getSessionAgents().map(candidate => [candidate.name, candidate.model])).toEqual([
+				["m1", ["b/y"]],
+			]);
+			const turn = JSON.stringify(agent.state.messages);
+			expect(turn).toContain('User: ask <model agent=\\"m1\\" name=\\"Y\\"/> to help');
+			expect(turn).toContain("Skill body: ^c/w");
+			expect(turn).toContain("Now available:");
+		} finally {
+			await agentSession.dispose();
+		}
+	});
+
+	test("queued skill image prompts carry expanded arguments and their agent notice", async () => {
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: models[0], systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: createMockModel({ responses: [] }).stream,
+		});
+		const agentSession = new AgentSession({
+			agent,
+			sessionManager: session,
+			modelRegistry: registry,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+		});
+		const image = { type: "image" as const, mimeType: "image/png", data: "aGVsbG8=" };
+		try {
+			await agentSession.promptCustomMessage(
+				{
+					customType: SKILL_PROMPT_MESSAGE_TYPE,
+					content: [{ type: "text", text: "Skill body: ^c/w\n\n---\nUser: ask ^b/y to help" }, image],
+					display: true,
+					details: { name: "test", path: "/skills/test/SKILL.md", args: "ask ^b/y to help", lineCount: 1 },
+					attribution: "user",
+				},
+				{ streamingBehavior: "steer", queueOnly: true },
+			);
+
+			expect(readModelMentions(session.getBranch())).toEqual([{ agent: "m1", selector: "b/y", name: "Y" }]);
+			const queued = agent.peekSteeringQueue();
+			const skill = queued.find(
+				(message): message is CustomMessage =>
+					message.role === "custom" && message.customType === SKILL_PROMPT_MESSAGE_TYPE,
+			);
+			expect(skill?.content).toEqual([
+				{ type: "text", text: 'Skill body: ^c/w\n\n---\nUser: ask <model agent="m1" name="Y"/> to help' },
+				image,
+			]);
+			expect(
+				queued.some(message => message.role === "custom" && message.customType === "session-agent-notice"),
+			).toBe(true);
 		} finally {
 			await agentSession.dispose();
 		}

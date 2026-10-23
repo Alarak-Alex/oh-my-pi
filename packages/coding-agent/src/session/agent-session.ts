@@ -8073,14 +8073,6 @@ export class AgentSession implements SettingsScope {
 			| undefined,
 		outcome: PromptDispatchOutcome,
 	): Promise<boolean> {
-		const textContent =
-			typeof message.content === "string"
-				? message.content
-				: message.content
-						.filter((content): content is TextContent => content.type === "text")
-						.map(content => content.text)
-						.join("");
-
 		let keywordNotices: CustomMessage[] = [];
 		// Queued deliveries bypass the idle-turn notice injection, so a queued user
 		// skill prompt carries the session-agent notice itself, like a queued typed
@@ -8092,11 +8084,38 @@ export class AgentSession implements SettingsScope {
 			if (details && typeof details === "object" && "args" in details && typeof details.args === "string") {
 				skillArgs = details.args;
 			}
+			if (skillArgs) {
+				const expandedArgs = this.#modelMentions.expandMentions(skillArgs);
+				if (expandedArgs !== skillArgs) {
+					// The skill body can contain model selectors too; only the final rendered user arguments authorize agents.
+					const renderedArgs = `User: ${skillArgs}`;
+					const expandRenderedArgs = (text: string): string => {
+						if (!text.endsWith(renderedArgs)) return text;
+						return text.slice(0, -skillArgs.length) + expandedArgs;
+					};
+					message = {
+						...message,
+						content:
+							typeof message.content === "string"
+								? expandRenderedArgs(message.content)
+								: message.content.map(part =>
+										part.type === "text" ? { ...part, text: expandRenderedArgs(part.text) } : part,
+									),
+					};
+				}
+			}
 			keywordNotices = this.#createMagicKeywordNotices(skillArgs);
 			const sessionAgentNotice = this.#tools.takeSessionAgentNotice();
 			queuedNotices = sessionAgentNotice ? [...keywordNotices, sessionAgentNotice] : keywordNotices;
 		}
 
+		const textContent =
+			typeof message.content === "string"
+				? message.content
+				: message.content
+						.filter((content): content is TextContent => content.type === "text")
+						.map(content => content.text)
+						.join("");
 		if (options?.queueOnly || this.isStreaming) {
 			const streamingBehavior = options?.streamingBehavior;
 			if (!streamingBehavior) {
