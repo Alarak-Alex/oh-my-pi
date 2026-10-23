@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage, Message } from "@oh-my-pi/pi-ai";
@@ -9,7 +9,7 @@ import { getAgentTombstonePath } from "@oh-my-pi/pi-coding-agent/registry/agent-
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import { restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
+import { recordSessionProcessStart, restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
 import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -65,11 +65,12 @@ async function writeSubagent(mainFile: string, cwd: string, id: string, messages
 }
 
 describe("restoreSession (omp --restore)", () => {
-	const ids = ["Cut", "Done", "Killed"];
+	const ids = ["Cut", "Done", "Killed", "Fresh"];
 	let tempDir: TempDir | undefined;
 	let manager: AsyncJobManager | undefined;
 
 	afterEach(async () => {
+		setSystemTime();
 		vi.restoreAllMocks();
 		for (const id of ids) AgentRegistry.global().unregister(id);
 		await manager?.dispose({ timeoutMs: 1000 });
@@ -79,17 +80,21 @@ describe("restoreSession (omp --restore)", () => {
 	});
 
 	it("goes on with each subagent cut off mid-turn as a job its parent receives, not with finished or killed ones", async () => {
+		setSystemTime(new Date("2026-10-09T00:00:00Z"));
 		tempDir = TempDir.createSync("@pi-restore-subagents-");
 		const cwd = tempDir.path();
 		const main = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		recordSessionProcessStart(main);
+		setSystemTime();
 		main.appendMessage({ role: "user", content: "fan out", timestamp: Date.now() });
 		const mainFile = main.getSessionFile();
 		if (!mainFile) throw new Error("Expected a persisted session file");
-		await main.close();
 		await writeSubagent(mainFile, cwd, "Cut", cutOff);
 		await writeSubagent(mainFile, cwd, "Done", finished);
 		const killed = await writeSubagent(mainFile, cwd, "Killed", cutOff);
 		await fs.writeFile(getAgentTombstonePath(killed), "");
+		recordSessionProcessStart(main);
+		await main.close();
 
 		manager = new AsyncJobManager({});
 		const delivered: string[] = [];
@@ -113,7 +118,7 @@ describe("restoreSession (omp --restore)", () => {
 		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockResolvedValue(result);
 		const restoreTurn = vi.fn(async () => true);
 		const session = {
-			sessionManager: { getSessionFile: () => mainFile },
+			sessionManager: { getSessionFile: () => mainFile, getEntries: () => main.getEntries() },
 			asyncJobManager: manager,
 			settings: Settings.isolated(),
 			restoreInterruptedTurn: restoreTurn,
@@ -127,5 +132,71 @@ describe("restoreSession (omp --restore)", () => {
 		await manager.getJob("Cut")!.promise;
 		await manager.drainDeliveries({ filter: { ownerId: MAIN_AGENT_ID } });
 		expect(delivered).toEqual(["Cut"]);
+	});
+
+	it("does not restart an abandoned subagent after the parent ran a replacement in a later process", async () => {
+		setSystemTime(new Date("2026-10-10T00:00:00Z"));
+		tempDir = TempDir.createSync("@pi-restore-stale-");
+		const cwd = tempDir.path();
+		const main = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		const mainFile = main.getSessionFile();
+		if (!mainFile) throw new Error("Expected a persisted session file");
+		recordSessionProcessStart(main);
+		await writeSubagent(mainFile, cwd, "Cut", cutOff);
+		setSystemTime(new Date("2026-10-11T00:00:00Z"));
+		recordSessionProcessStart(main);
+		await writeSubagent(mainFile, cwd, "Done", finished);
+		setSystemTime(new Date("2026-10-11T00:01:00Z"));
+		await writeSubagent(mainFile, cwd, "Fresh", cutOff);
+		setSystemTime(new Date("2026-10-22T00:00:00Z"));
+		recordSessionProcessStart(main);
+		await main.close();
+		setSystemTime();
+
+		manager = new AsyncJobManager({});
+		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockResolvedValue({
+			index: 0,
+			id: "Fresh",
+			agent: "Fresh",
+			agentSource: "user",
+			task: "Fresh task",
+			exitCode: 0,
+			output: "done",
+			stderr: "",
+			truncated: false,
+			durationMs: 1,
+			tokens: 0,
+			requests: 1,
+		});
+		const session = {
+			sessionManager: { getSessionFile: () => mainFile, getEntries: () => main.getEntries() },
+			asyncJobManager: manager,
+			settings: Settings.isolated(),
+			restoreInterruptedTurn: async () => false,
+		} as unknown as AgentSession;
+
+		const outcome = await restoreSession(session);
+		expect(outcome.subagents).toEqual(["Fresh"]);
+		expect(followUp).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not guess which legacy subagents were running without a recorded process boundary", async () => {
+		tempDir = TempDir.createSync("@pi-restore-legacy-");
+		const cwd = tempDir.path();
+		const main = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		const mainFile = main.getSessionFile();
+		if (!mainFile) throw new Error("Expected a persisted session file");
+		await writeSubagent(mainFile, cwd, "Cut", cutOff);
+		recordSessionProcessStart(main);
+		await main.close();
+
+		manager = new AsyncJobManager({});
+		const session = {
+			sessionManager: { getSessionFile: () => mainFile, getEntries: () => main.getEntries() },
+			asyncJobManager: manager,
+			restoreInterruptedTurn: async () => true,
+		} as unknown as AgentSession;
+
+		expect(await restoreSession(session)).toEqual({ turn: true, subagents: [] });
 	});
 });

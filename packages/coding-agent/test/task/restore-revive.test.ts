@@ -3,7 +3,7 @@
  * call is revived from disk, its cut-off call runs again, the agent answers, and the
  * parent receives the answer as the subagent's job.
  */
-import { afterEach, beforeEach, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, expect, it, setSystemTime, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,7 +19,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
-import { restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
+import { recordSessionProcessStart, restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
 import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 
@@ -57,6 +57,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	setSystemTime();
 	await AgentLifecycleManager.global().dispose();
 	AgentLifecycleManager.resetGlobalForTests();
 	AgentRegistry.resetGlobalForTests();
@@ -79,11 +80,13 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 
 	// The main session and its subagent's transcript, as the process left them when it died
 	// inside the subagent's `read` call: no tool result, no exit record.
+	setSystemTime(new Date("2026-10-09T00:00:00Z"));
 	const main = SessionManager.create(cwd, path.join(root, "sessions"));
+	recordSessionProcessStart(main);
+	setSystemTime();
 	main.appendMessage({ role: "user", content: "fan out", timestamp: Date.now() });
 	const mainFile = main.getSessionFile();
 	if (!mainFile) throw new Error("Expected a persisted session file");
-	await main.close();
 	const child = await SessionManager.open(
 		path.join(mainFile.slice(0, -6), `${AGENT_ID}.jsonl`),
 		undefined,
@@ -120,6 +123,8 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 		timestamp: Date.now(),
 	});
 	await child.close();
+	recordSessionProcessStart(main);
+	await main.close();
 
 	const authStorage = createInMemoryAuthStorage();
 	authStorage.keys.setRuntime("mock", "test-key");
@@ -147,6 +152,7 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 	const session = {
 		sessionManager: {
 			getSessionFile: () => mainFile,
+			getEntries: () => main.getEntries(),
 			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
 		},
