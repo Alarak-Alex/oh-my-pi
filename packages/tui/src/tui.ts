@@ -3293,10 +3293,11 @@ export class TUI extends Container {
 
 	/**
 	 * Clip direct placements to the visible source slice: Kitty tracks a live
-	 * placement owner, while SIXEL crops the encoded raster (iTerm2 images are
-	 * not cropped). SIXEL and iTerm2 have no delete command and composite over
-	 * existing pixels, so erase the visible rows they paint above the line
-	 * before repainting.
+	 * placement owner, while SIXEL crops the encoded raster. An iTerm2 image
+	 * or a Kitty transmit-and-display image cannot be cropped, so a block
+	 * clipped at the top is omitted rather than painted over following text.
+	 * SIXEL and iTerm2 have no delete command and composite over existing
+	 * pixels, so erase the visible rows they paint above the line before repainting.
 	 *
 	 * `frameRow` is the line's row within the frame it was rendered in, so at
 	 * most that many rows above it belong to its image block. A viewport whose
@@ -3319,12 +3320,13 @@ export class TUI extends Container {
 				const cellHeight = getCellDimensions().heightPx;
 				const cropPixels = Math.round((requestedLift - lift) * cellHeight);
 				const maxHeightPixels = Math.floor((frameRow + 1) * cellHeight);
-				line = withDirectPlacementLift(
-					line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
-						this.#cropSixel(sequence, cropPixels, maxHeightPixels),
-					),
-					lift,
+				const clipped = line.replace(/\x1bP[0-9;]*q[\s\S]*?\x1b\\/g, sequence =>
+					this.#cropSixel(sequence, cropPixels, maxHeightPixels),
 				);
+				// Re-anchoring an uncropped OSC/APC image would paint its hidden
+				// rows below the reserved slice, over the following text.
+				if (clipped === line) return "";
+				line = withDirectPlacementLift(clipped, lift);
 			}
 			return lift > 0 ? `\x1b[${lift}A${`${ERASE_LINE}\x1b[B`.repeat(lift)}${line}` : line;
 		}
