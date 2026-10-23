@@ -274,14 +274,13 @@ async function resolveBackend(
 
 	if (language === "python") {
 		if (!allowPy) throw new ToolError("Python backend is disabled (PI_PY=0 or eval.py = false).");
-		const available = await pythonBackend.isAvailable(session, probeOpts);
+		const availability = await pythonBackend.checkAvailability(session, probeOpts);
 		throwIfAborted(probeOpts?.signal);
-		if (!available) {
-			throw new ToolError(
-				allowJs
-					? 'Python backend is unavailable in this session. Pass language: "js" or install the python kernel.'
-					: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".',
-			);
+		if (!availability.ok) {
+			const remedy = allowJs
+				? 'Python backend is unavailable in this session. Pass language: "js" or install the python kernel.'
+				: 'Python backend is unavailable in this session. Install the python kernel to use language: "py".';
+			throw new ToolError(availability.reason ? `${remedy}\n${availability.reason}` : remedy);
 		}
 		return { backend: pythonBackend };
 	}
