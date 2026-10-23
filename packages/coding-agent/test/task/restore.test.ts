@@ -149,7 +149,9 @@ describe("restoreSession (omp --restore)", () => {
 		const killed = await writeSubagent(mainFile, cwd, "Killed", cutOff);
 		await fs.writeFile(getAgentTombstonePath(killed), "");
 		recordSessionActivation(main);
+		await main.ensureOnDisk();
 		await main.close();
+		const active = await SessionManager.open(mainFile);
 
 		manager = new AsyncJobManager({});
 		const delivered: string[] = [];
@@ -173,7 +175,7 @@ describe("restoreSession (omp --restore)", () => {
 		const followUp = vi.spyOn(executorModule, "runSubagentFollowUpTurn").mockResolvedValue(result);
 		const restoreTurn = vi.fn(async () => true);
 		const session = {
-			sessionManager: { getSessionFile: () => mainFile, getEntries: () => main.getEntries() },
+			sessionManager: active,
 			asyncJobManager: manager,
 			settings: Settings.isolated(),
 			restoreInterruptedTurn: restoreTurn,
@@ -187,6 +189,7 @@ describe("restoreSession (omp --restore)", () => {
 		await manager.getJob("Cut")!.promise;
 		await manager.drainDeliveries({ filter: { ownerId: MAIN_AGENT_ID } });
 		expect(delivered).toEqual(["Cut"]);
+		await active.close();
 	});
 
 	it("does not restart an abandoned subagent after the parent ran a replacement in a later process", async () => {
@@ -205,7 +208,9 @@ describe("restoreSession (omp --restore)", () => {
 		await writeSubagent(mainFile, cwd, "Fresh", cutOff);
 		setSystemTime(new Date("2026-10-22T00:00:00Z"));
 		recordSessionActivation(main);
+		await main.ensureOnDisk();
 		await main.close();
+		const active = await SessionManager.open(mainFile);
 		setSystemTime();
 
 		manager = new AsyncJobManager({});
@@ -224,7 +229,7 @@ describe("restoreSession (omp --restore)", () => {
 			requests: 1,
 		});
 		const session = {
-			sessionManager: { getSessionFile: () => mainFile, getEntries: () => main.getEntries() },
+			sessionManager: active,
 			asyncJobManager: manager,
 			settings: Settings.isolated(),
 			restoreInterruptedTurn: async () => false,
@@ -233,6 +238,81 @@ describe("restoreSession (omp --restore)", () => {
 		const outcome = await restoreSession(session);
 		expect(outcome.subagents).toEqual(["Fresh"]);
 		expect(followUp).toHaveBeenCalledTimes(1);
+		await active.close();
+	});
+
+	it("recovers a revived subagent when another process exits before its turn is written", async () => {
+		tempDir = TempDir.createSync("@pi-restore-revival-crash-");
+		const cwd = tempDir.path();
+		setSystemTime(new Date("2026-10-09T00:00:00Z"));
+		const original = SessionManager.create(cwd, path.join(cwd, "sessions"));
+		original.appendMessage({ role: "user", content: "fan out", timestamp: Date.now() });
+		recordSessionActivation(original);
+		await original.ensureOnDisk();
+		const mainFile = original.getSessionFile();
+		if (!mainFile) throw new Error("Expected a persisted session file");
+		setSystemTime(new Date("2026-10-09T00:01:00Z"));
+		await writeSubagent(mainFile, cwd, "Cut", cutOff);
+		await original.close();
+
+		setSystemTime(new Date("2026-10-22T00:00:00Z"));
+		const first = await SessionManager.open(mainFile);
+		recordSessionActivation(first);
+		const pending = Promise.withResolvers<SingleResult>();
+		const result: SingleResult = {
+			index: 0,
+			id: "Cut",
+			agent: "Cut",
+			agentSource: "user",
+			task: "Cut task",
+			exitCode: 0,
+			output: "done",
+			stderr: "",
+			truncated: false,
+			durationMs: 1,
+			tokens: 0,
+			requests: 1,
+		};
+		const followUp = vi
+			.spyOn(executorModule, "runSubagentFollowUpTurn")
+			.mockImplementationOnce(() => pending.promise)
+			.mockResolvedValue(result);
+		manager = new AsyncJobManager({});
+		const firstRun = {
+			sessionManager: first,
+			asyncJobManager: manager,
+			settings: Settings.isolated(),
+			restoreInterruptedTurn: async () => false,
+		} as unknown as AgentSession;
+		try {
+			expect((await restoreSession(firstRun)).subagents).toEqual(["Cut"]);
+			expect(followUp).toHaveBeenCalledTimes(1);
+			await manager.dispose({ timeoutMs: 0 });
+			await first.close();
+
+			setSystemTime(new Date("2026-10-23T00:00:00Z"));
+			const second = await SessionManager.open(mainFile);
+			try {
+				recordSessionActivation(second);
+				manager = new AsyncJobManager({});
+				const secondRun = {
+					sessionManager: second,
+					asyncJobManager: manager,
+					settings: Settings.isolated(),
+					restoreInterruptedTurn: async () => false,
+				} as unknown as AgentSession;
+				expect((await restoreSession(secondRun)).subagents).toEqual(["Cut"]);
+				const job = manager.getJob("Cut");
+				if (!job) throw new Error("Expected restored subagent job");
+				await job.promise;
+				expect(followUp).toHaveBeenCalledTimes(2);
+			} finally {
+				await second.close();
+			}
+		} finally {
+			pending.resolve(result);
+			await first.close();
+		}
 	});
 
 	it("restores a cut-off subagent from a session created with /new in this process", async () => {

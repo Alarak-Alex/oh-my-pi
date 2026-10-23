@@ -4,7 +4,8 @@
  * ({@link AgentSession.restoreInterruptedTurn}) and the subagents it was running.
  *
  * The parent's latest activation before this restore limits recovery to
- * subagents active since that boundary; older interrupted work is not restarted.
+ * subagents active since that boundary, including revivals registered before
+ * a second crash; older interrupted work is not restarted.
  * Every persisted subagent transcript under the session ({@link collectSubSessions})
  * that its process left mid-turn ({@link hasRestorableTurn}), was not killed (no
  * tombstone) and can be revived (a `session_init` contract, not isolated) runs one
@@ -30,17 +31,25 @@ import { persistedAgentDefinition } from "./persisted-revive";
 import { formatTaskResultSummary } from "./result-summary";
 import { cfgTaskMaxRuntimeMs } from "./settings";
 
-function previousActivationStart(entries: readonly SessionEntry[]): number | undefined {
+const SUBAGENT_REACTIVATION_CUSTOM_TYPE = "subagent_reactivation";
+
+function previousActivation(entries: readonly SessionEntry[]): { start: number; reactivated: Set<string> } | undefined {
 	let current = false;
+	const reactivated = new Set<string>();
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
-		if (entry.type !== "custom" || entry.customType !== SESSION_ACTIVATION_CUSTOM_TYPE) continue;
-		if (!current) {
-			current = true;
-			continue;
+		if (entry.type !== "custom") continue;
+		if (entry.customType === SESSION_ACTIVATION_CUSTOM_TYPE) {
+			if (!current) {
+				current = true;
+				continue;
+			}
+			const start = Date.parse(entry.timestamp);
+			return Number.isFinite(start) ? { start, reactivated } : undefined;
 		}
-		const timestamp = Date.parse(entry.timestamp);
-		return Number.isFinite(timestamp) ? timestamp : undefined;
+		if (current && entry.customType === SUBAGENT_REACTIVATION_CUSTOM_TYPE && typeof entry.data === "string") {
+			reactivated.add(entry.data);
+		}
 	}
 	return undefined;
 }
@@ -90,8 +99,8 @@ async function restoreSubagents(session: AgentSession, options: RestoreOptions):
 	const sessionFile = session.sessionManager.getSessionFile();
 	const manager = session.asyncJobManager;
 	if (!sessionFile || !manager) return [];
-	const previousStart = previousActivationStart(session.sessionManager.getEntries());
-	if (previousStart === undefined) {
+	const previous = previousActivation(session.sessionManager.getEntries());
+	if (previous === undefined) {
 		logger.debug("Previous session activation unknown; subagents not restored");
 		return [];
 	}
@@ -107,7 +116,9 @@ async function restoreSubagents(session: AgentSession, options: RestoreOptions):
 		const sub = subSessions[key]!;
 		if (sub.aborted || !hasRestorableTurn(sub.entries)) continue;
 		const lastMessage = lastMessageTime(sub.entries);
-		if (lastMessage === undefined || lastMessage <= previousStart) continue;
+		if (lastMessage === undefined || (lastMessage <= previous.start && !previous.reactivated.has(sub.agentId))) {
+			continue;
+		}
 		const id = sub.agentId;
 		const ref = registry.get(id);
 		const init = extractSessionInit(sub.entries);
@@ -117,6 +128,10 @@ async function restoreSubagents(session: AgentSession, options: RestoreOptions):
 		}
 		const sessionFileOfRef = ref.sessionFile;
 		const structured = init.tools.includes("yield");
+		// Persist ownership before launching a revival: its transcript may remain
+		// unchanged if the process dies inside ensureLive or restoreInterruptedTurn.
+		session.sessionManager.appendCustomEntry(SUBAGENT_REACTIVATION_CUSTOM_TYPE, id);
+		await session.sessionManager.flush();
 		manager.register(
 			"task",
 			id,

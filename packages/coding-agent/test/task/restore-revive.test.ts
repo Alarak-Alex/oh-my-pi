@@ -125,7 +125,9 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 	});
 	await child.close();
 	recordSessionActivation(main);
+	await main.ensureOnDisk();
 	await main.close();
+	const active = await SessionManager.open(mainFile);
 
 	const authStorage = createInMemoryAuthStorage();
 	authStorage.keys.setRuntime("mock", "test-key");
@@ -151,12 +153,7 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 		modelRoles: { default: "mock/mock-model" },
 	});
 	const session = {
-		sessionManager: {
-			getSessionFile: () => mainFile,
-			getEntries: () => main.getEntries(),
-			getCwd: () => cwd,
-			getArtifactManager: () => undefined,
-		},
+		sessionManager: active,
 		asyncJobManager: manager,
 		settings,
 		effectiveExtensionRoots: { explicit: [], mode: "merge", configured: [], configuredLevel: "user" },
@@ -180,6 +177,7 @@ it("revives a subagent a crash cut off mid tool call, runs the call again, and d
 		expect(readResults).toHaveLength(1);
 		expect(readResults[0]).toContain("the answer is 42");
 	} finally {
+		await active.close();
 		authStorage.close();
 	}
 }, 20_000);
