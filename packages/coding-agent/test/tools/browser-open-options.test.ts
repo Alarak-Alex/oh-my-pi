@@ -391,7 +391,7 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 		}
 	});
 
-	it("accepts an untrusted certificate for the tab's lifetime and checks it again once the tab closes", async () => {
+	it("accepts an untrusted certificate for the tab's lifetime, across a worker recycle, and checks it again once the tab closes", async () => {
 		const serveUntrusted = () =>
 			Bun.serve({
 				port: 0,
@@ -399,7 +399,8 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 				fetch: () => new Response("<title>untrusted</title>", { headers: { "content-type": "text/html" } }),
 			});
 		const server = serveUntrusted();
-		// A fresh origin after close: Chromium reuses the accepted connection for the first one.
+		// Fresh origins after the recycle and after close: Chromium reuses an accepted connection to an origin.
+		const recycled = serveUntrusted();
 		const later = serveUntrusted();
 		// Launched without --ignore-certificate-errors and attached over app.cdp_url, as the shared
 		// browser is: only the tab's CDP override can accept the certificate.
@@ -425,6 +426,25 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 					}),
 				),
 			).toBe("untrusted");
+			const opened = getTab(name);
+			const worker = opened?.backend === "worker" ? opened.worker : undefined;
+			// A run that outlives its timeout recycles the tab onto a new worker.
+			expect(
+				await rejectionOf(
+					invoke({ action: "run", name, code: "await Promise.withResolvers().promise;", timeout: 1 }),
+				),
+			).toMatchObject({ message: expect.stringContaining("Browser code execution timed out") });
+			const tab = getTab(name);
+			expect(tab?.backend === "worker" && tab.worker).not.toBe(worker);
+			expect(
+				returnedValue(
+					await invoke({
+						action: "run",
+						name,
+						code: `await tab.goto(${JSON.stringify(recycled.url.href)}); return await tab.title();`,
+					}),
+				),
+			).toBe("untrusted");
 			await invoke({ action: "close", name });
 			// The borrowed page outlives the tab; its certificate checks come back with the override released.
 			expect(await rejectionOf(page.goto(later.url.href))).toMatchObject({
@@ -432,11 +452,12 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 			});
 		} finally {
 			server.stop(true);
+			recycled.stop(true);
 			later.stop(true);
 			await browser.close();
 			if (userDataDir) await removeUserDataDir(userDataDir);
 		}
-	}, 20_000);
+	}, 30_000);
 
 	it("keeps the tab on what loaded when the page outlasts the open timeout", async () => {
 		const server = Bun.serve({
