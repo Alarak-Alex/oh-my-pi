@@ -366,14 +366,17 @@ export class UsageService implements UsageApi {
 		const cacheKey = this.#deps.cache.reportKey(request);
 		const failureKey = this.#deps.cache.failureKey(cacheKey);
 		const now = Date.now();
+		// A reset in another session cannot bump this process's refresh epoch, so its
+		// durable marker must win over reports or cooldowns written before the reset.
+		const resetPending = this.#deps.cache.resetProbePending(cacheKey);
 		const cached = this.#deps.cache.get<UsageReport | null>(cacheKey);
 		// Fresh cache hit: return whatever's there (success or null fallback).
-		if (cached && cached.expiresAt > now) {
+		if (!resetPending && cached && cached.expiresAt > now) {
 			return cached.value;
 		}
 
 		const failure = this.#deps.cache.get<null>(failureKey);
-		if (failure && failure.expiresAt > now) {
+		if (!resetPending && failure && failure.expiresAt > now) {
 			return this.#deps.cache.lastGood(cacheKey);
 		}
 		const hostKey =
@@ -408,17 +411,19 @@ export class UsageService implements UsageApi {
 				// A peer may have completed or a reset may have superseded this probe while we waited.
 				if (refreshEpoch !== this.#deps.cache.refreshEpoch(request.provider))
 					return this.#deps.cache.lastGood(cacheKey);
-				const updated = this.#deps.cache.get<UsageReport | null>(cacheKey);
-				if (updated && updated.expiresAt > Date.now()) return updated.value;
-				if ((this.#deps.cache.get<null>(failureKey)?.expiresAt ?? 0) > Date.now()) {
-					return this.#deps.cache.lastGood(cacheKey);
-				}
-				if (hostKey && this.#deps.cache.hostCooldownActive(hostKey, cacheKey)) {
-					return this.#deps.cache.lastGood(cacheKey);
-				}
-				const resetProbeKey = hostKey ? this.#deps.cache.resetProbeKey(cacheKey) : undefined;
-				if (resetProbeKey && this.#deps.cache.get<boolean>(resetProbeKey)?.value === true) {
-					this.#deps.cache.set(resetProbeKey, { value: null, expiresAt: 0 });
+				// Re-read after the wait: a peer that held the lease across a reset may have
+				// cached its pre-reset answer, which must not satisfy the post-reset probe.
+				if (this.#deps.cache.resetProbePending(cacheKey)) {
+					this.#deps.cache.set(this.#deps.cache.resetProbeKey(cacheKey), { value: null, expiresAt: 0 });
+				} else {
+					const updated = this.#deps.cache.get<UsageReport | null>(cacheKey);
+					if (updated && updated.expiresAt > Date.now()) return updated.value;
+					if ((this.#deps.cache.get<null>(failureKey)?.expiresAt ?? 0) > Date.now()) {
+						return this.#deps.cache.lastGood(cacheKey);
+					}
+					if (hostKey && this.#deps.cache.hostCooldownActive(hostKey, cacheKey)) {
+						return this.#deps.cache.lastGood(cacheKey);
+					}
 				}
 				const report = await this.#fetchUsageUncached(request, timeoutMs);
 				// Block marks bump the generation too: a report racing a fresh 429 may

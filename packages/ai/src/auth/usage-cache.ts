@@ -210,10 +210,18 @@ export class UsageCache {
 	claudeHostThrottleKey(baseUrl?: string): string {
 		return `throttle:anthropic:${new URL(normalizeClaudeApiBaseUrl(baseUrl)).origin}`;
 	}
+	/**
+	 * A confirmed reset is durable across sessions: it outranks a peer-written
+	 * report or failure cooldown until the redeemed account's next probe starts.
+	 */
+	resetProbePending(reportKey: string): boolean {
+		return this.get<boolean>(this.resetProbeKey(reportKey))?.value === true;
+	}
+
 	/** Preserve the host cooldown for other accounts while allowing a confirmed reset one probe. */
 	hostCooldownActive(hostKey: string, reportKey: string): boolean {
 		if ((this.get<null>(hostKey)?.expiresAt ?? 0) <= Date.now()) return false;
-		return this.get<boolean>(this.resetProbeKey(reportKey))?.value !== true;
+		return !this.resetProbePending(reportKey);
 	}
 
 	get<T>(key: string): UsageCacheEntry<T> | undefined {
