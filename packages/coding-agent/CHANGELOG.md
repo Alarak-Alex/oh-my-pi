@@ -32,7 +32,7 @@
 - Fixed reading `proc://<id>/kill` or `proc://<id>/mode` answering only "writable only", so agents often moved on with the job still running; the error now names the `write` call that cancels the job or sets the mode, with the real id ([#16580](https://github.com/can1357/oh-my-pi/pull/16580) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `history://<id>` failing with "has no transcript: session is gone" for a worker that is still running but has not created its session or transcript file yet; it now answers "No transcript has been written yet". ([#16645](https://github.com/can1357/oh-my-pi/pull/16645) by [@Komzpa](https://github.com/Komzpa))
 - Fixed the `eval` tool telling sessions with only the Python runtime to call `tool.<name>(args)` without `await`, which returns a coroutine and never runs the tool ([#16578](https://github.com/can1357/oh-my-pi/pull/16578) by [@will-bogusz](https://github.com/will-bogusz))
-- Fixed a long streamed answer ending the collab room for every guest with "collab send backlog exceeded its limit"; guests now receive the latest state of a streaming message instead of every intermediate update ([#16956](https://github.com/can1357/oh-my-pi/issues/16956))
+- Fixed a long streamed answer ending the collab room for every guest with "collab send backlog exceeded its limit"; the host now sends guests only the latest state of a streaming message, and guests still speak the full answer when speech is on ([#16956](https://github.com/can1357/oh-my-pi/issues/16956))
 
 ## [18.12.6] - 2026-10-21
 
