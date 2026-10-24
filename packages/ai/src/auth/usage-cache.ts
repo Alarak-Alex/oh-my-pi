@@ -201,6 +201,20 @@ export class UsageCache {
 	failureKey(reportKey: string): string {
 		return `failure:${reportKey}`;
 	}
+	/** A single post-reset probe may bypass a Claude host throttle for the redeemed account. */
+	resetProbeKey(reportKey: string): string {
+		return `reset-probe:${reportKey}`;
+	}
+
+	/** Keep the Claude IP throttle scoped to the same canonical host as usage requests. */
+	claudeHostThrottleKey(baseUrl?: string): string {
+		return `throttle:anthropic:${new URL(normalizeClaudeApiBaseUrl(baseUrl)).origin}`;
+	}
+	/** Preserve the host cooldown for other accounts while allowing a confirmed reset one probe. */
+	hostCooldownActive(hostKey: string, reportKey: string): boolean {
+		if ((this.get<null>(hostKey)?.expiresAt ?? 0) <= Date.now()) return false;
+		return this.get<boolean>(this.resetProbeKey(reportKey))?.value !== true;
+	}
 
 	get<T>(key: string): UsageCacheEntry<T> | undefined {
 		const raw = this.#store.getCache(`${USAGE_CACHE_PREFIX}${key}`);
@@ -369,6 +383,17 @@ export class UsageCache {
 			for (const key of keys) this.set(this.failureKey(key), { value: null, expiresAt: 0 });
 		}
 		this.invalidate(provider, baseUrl, options);
+		if (provider === "anthropic" && options?.resetSpentCredentialId !== undefined) {
+			const spent = this.#pool.entries(provider).find(entry => entry.id === options.resetSpentCredentialId);
+			if (spent?.credential.type === "oauth") {
+				const key = this.reportKey(oauthUsageRequest(provider, spent.credential, baseUrl));
+				const hostCooldown = this.get<null>(this.claudeHostThrottleKey(baseUrl))?.expiresAt ?? 0;
+				this.set(this.resetProbeKey(key), {
+					value: true,
+					expiresAt: Math.max(Date.now() + USAGE_FORCE_REFRESH_TTL_MS, hostCooldown),
+				});
+			}
+		}
 	}
 
 	/**

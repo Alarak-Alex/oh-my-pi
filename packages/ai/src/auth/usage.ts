@@ -19,7 +19,6 @@ import type {
 	UsageReport,
 } from "../usage";
 import { DEFAULT_USAGE_PROVIDERS } from "../usage/registry";
-import { normalizeClaudeApiBaseUrl } from "../usage/claude-api";
 import { raceSignal } from "./abort";
 import type { SessionAffinity } from "./affinity";
 import type { CredentialBlocks } from "./blocks";
@@ -202,13 +201,9 @@ export class UsageService implements UsageApi {
 			activeOrganizationId: next.activeOrganizationId,
 		});
 	}
-	#claudeHostKey(request: UsageRequestDescriptor): string | undefined {
-		if (request.provider !== "anthropic") return undefined;
-		return `throttle:anthropic:${new URL(normalizeClaudeApiBaseUrl(request.baseUrl)).origin}`;
-	}
 
 	#recordClaudeRateLimit(url: string, retryAfter: string | null): void {
-		const key = `throttle:anthropic:${new URL(url).origin}`;
+		const key = this.#deps.cache.claudeHostThrottleKey(url);
 		const now = Date.now();
 		const seconds = retryAfter === null ? NaN : Number(retryAfter);
 		const headerUntil =
@@ -381,8 +376,9 @@ export class UsageService implements UsageApi {
 		if (failure && failure.expiresAt > now) {
 			return this.#deps.cache.lastGood(cacheKey);
 		}
-		const hostKey = this.#claudeHostKey(request);
-		if (hostKey && (this.#deps.cache.get<null>(hostKey)?.expiresAt ?? 0) > now) {
+		const hostKey =
+			request.provider === "anthropic" ? this.#deps.cache.claudeHostThrottleKey(request.baseUrl) : undefined;
+		if (hostKey && this.#deps.cache.hostCooldownActive(hostKey, cacheKey)) {
 			return this.#deps.cache.lastGood(cacheKey);
 		}
 
@@ -409,14 +405,20 @@ export class UsageService implements UsageApi {
 					}
 					leases.push(key);
 				}
-				// A peer may have finished while this process waited for either lease.
+				// A peer may have completed or a reset may have superseded this probe while we waited.
+				if (refreshEpoch !== this.#deps.cache.refreshEpoch(request.provider))
+					return this.#deps.cache.lastGood(cacheKey);
 				const updated = this.#deps.cache.get<UsageReport | null>(cacheKey);
 				if (updated && updated.expiresAt > Date.now()) return updated.value;
 				if ((this.#deps.cache.get<null>(failureKey)?.expiresAt ?? 0) > Date.now()) {
 					return this.#deps.cache.lastGood(cacheKey);
 				}
-				if (hostKey && (this.#deps.cache.get<null>(hostKey)?.expiresAt ?? 0) > Date.now()) {
+				if (hostKey && this.#deps.cache.hostCooldownActive(hostKey, cacheKey)) {
 					return this.#deps.cache.lastGood(cacheKey);
+				}
+				const resetProbeKey = hostKey ? this.#deps.cache.resetProbeKey(cacheKey) : undefined;
+				if (resetProbeKey && this.#deps.cache.get<boolean>(resetProbeKey)?.value === true) {
+					this.#deps.cache.set(resetProbeKey, { value: null, expiresAt: 0 });
 				}
 				const report = await this.#fetchUsageUncached(request, timeoutMs);
 				// Block marks bump the generation too: a report racing a fresh 429 may

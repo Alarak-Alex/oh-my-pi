@@ -238,6 +238,11 @@ describe("Claude saved reset account safety", () => {
 		f.state.genericUsageEnabled = true;
 		const reports = await f.storage.usage.reports({ baseUrlResolver: f.baseUrlResolver });
 		expect(reports?.some(report => report.metadata?.orgId === "org-b")).toBe(true);
+		expect(reports?.some(report => report.metadata?.orgId === "org-a")).toBe(false);
+		expect(f.usageRequests.filter(search => search === "")).toHaveLength(2);
+		await f.storage.usage.invalidate("anthropic");
+		await f.storage.usage.reports({ baseUrlResolver: f.baseUrlResolver });
+		expect(f.usageRequests.filter(search => search === "")).toHaveLength(2);
 	});
 
 	it("does not spend a new offer under an old confirmation", async () => {
