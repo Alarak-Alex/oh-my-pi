@@ -74,6 +74,8 @@ export interface JobWidgetRegistry {
 	 * model start writing its spec.
 	 */
 	view(job: AsyncJob): JobWidgetView | undefined;
+	/** Reconcile a live `async.widgets` change, aborting requests when disabled. */
+	syncEnabled(): void;
 	/** Called after a background refresh changed a shown widget, so a surface that is not polling repaints. */
 	subscribe(listener: () => void): () => void;
 	/** Drops a job's widget, once its row is evicted. */
