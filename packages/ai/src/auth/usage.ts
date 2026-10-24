@@ -19,6 +19,7 @@ import type {
 	UsageReport,
 } from "../usage";
 import { DEFAULT_USAGE_PROVIDERS } from "../usage/registry";
+import { normalizeClaudeApiBaseUrl } from "../usage/claude-api";
 import { raceSignal } from "./abort";
 import type { SessionAffinity } from "./affinity";
 import type { CredentialBlocks } from "./blocks";
@@ -111,6 +112,9 @@ type UsageReportsOptions = {
 };
 
 /** Usage reports: per-credential cached fetches, aggregate reports, header ingestion, history. */
+const USAGE_PROBE_LEASE_MS = 30_000;
+const CLAUDE_HOST_BACKOFF_MS = 5 * 60_000;
+
 export class UsageService implements UsageApi {
 	#deps: UsageServiceDeps;
 	/** Runtime extension providers take precedence over the configured/default resolver. */
@@ -198,6 +202,24 @@ export class UsageService implements UsageApi {
 			activeOrganizationId: next.activeOrganizationId,
 		});
 	}
+	#claudeHostKey(request: UsageRequestDescriptor): string | undefined {
+		if (request.provider !== "anthropic") return undefined;
+		return `throttle:anthropic:${new URL(normalizeClaudeApiBaseUrl(request.baseUrl)).origin}`;
+	}
+
+	#recordClaudeRateLimit(url: string, retryAfter: string | null): void {
+		const key = `throttle:anthropic:${new URL(url).origin}`;
+		const now = Date.now();
+		const seconds = retryAfter === null ? NaN : Number(retryAfter);
+		const headerUntil =
+			Number.isFinite(seconds) && seconds >= 0 ? now + seconds * 1000 : Date.parse(retryAfter ?? "");
+		const expiresAt = Math.max(
+			now + CLAUDE_HOST_BACKOFF_MS,
+			Number.isFinite(headerUntil) ? headerUntil : 0,
+			this.#deps.cache.get<null>(key)?.expiresAt ?? 0,
+		);
+		this.#deps.cache.set(key, { value: null, expiresAt });
+	}
 
 	/** Probe a provider endpoint, refreshing near-expiry OAuth tokens when possible. */
 	async #fetchUsageUncached(request: UsageRequestDescriptor, timeoutMs?: number): Promise<UsageReport | null> {
@@ -277,6 +299,12 @@ export class UsageService implements UsageApi {
 			const report = await providerImpl.fetchUsage(params, {
 				fetch: this.fetch,
 				logger: this.logger,
+				...(request.provider === "anthropic"
+					? {
+							onRateLimit: (url: string, retryAfter: string | null) =>
+								this.#recordClaudeRateLimit(url, retryAfter),
+						}
+					: {}),
 				...(previousReport ? { previousReport } : {}),
 			});
 			// Attribute the report to the credential's organization. The orgId and
@@ -317,6 +345,23 @@ export class UsageService implements UsageApi {
 		}
 	}
 
+	/** SQLite-backed leases serialize expired probes across sessions without blocking other credentials. */
+	async #acquireUsageLease(key: string, owner: string, timeoutMs: number): Promise<boolean> {
+		const deadline = Date.now() + timeoutMs;
+		while (true) {
+			const acquired = this.#deps.cache.tryAcquireUsageLease(
+				key,
+				owner,
+				Date.now() + Math.max(USAGE_PROBE_LEASE_MS, timeoutMs + 5_000),
+			);
+			if (acquired === undefined || acquired) return true;
+			const remaining = deadline - Date.now();
+			if (remaining <= 0) return false;
+			const expiresAt = this.#deps.cache.getUsageLeaseExpiresAt(key);
+			await Bun.sleep(Math.min(remaining, 200, Math.max(50, (expiresAt ?? Date.now() + 200) - Date.now())));
+		}
+	}
+
 	/** Cache a credential report with jitter and failure cooldown. */
 	async #fetchUsageCached(
 		request: UsageRequestDescriptor,
@@ -336,6 +381,10 @@ export class UsageService implements UsageApi {
 		if (failure && failure.expiresAt > now) {
 			return this.#deps.cache.lastGood(cacheKey);
 		}
+		const hostKey = this.#claudeHostKey(request);
+		if (hostKey && (this.#deps.cache.get<null>(hostKey)?.expiresAt ?? 0) > now) {
+			return this.#deps.cache.lastGood(cacheKey);
+		}
 
 		// Invalidation must not fork an already-running credential probe. Share it;
 		// only a refresh that postdates its start (user refresh, confirmed reset)
@@ -351,46 +400,67 @@ export class UsageService implements UsageApi {
 		const refreshEpoch = this.#deps.cache.refreshEpoch(request.provider);
 		const recoveryEpoch = this.#deps.cache.recoveryEpoch(request.provider);
 		const promise = (async () => {
-			const report = await this.#fetchUsageUncached(request, timeoutMs);
-			// Block marks bump the generation too: a report racing a fresh 429 may
-			// predate it, so it answers this probe but is neither cached nor used
-			// to heal blocks.
-			const invalidated = usageCacheEpoch !== this.#deps.cache.epoch;
-			if (report !== null) {
-				if (invalidated) return report;
-				this.#deps.blocks.reconcileRequest(request, report);
-				const ttlJitter = USAGE_REPORT_TTL_MS * (Math.random() * 0.5 - 0.25);
-				// Success: stagger per-credential cache expiry so all accounts don't
-				// refresh in the same window — Anthropic / OpenAI rate-limit `/usage`
-				// per source IP regardless of account, and synchronized 5-credential
-				// fan-out trips 429s every cycle. With ±25% jitter on TTL the refresh
-				// times decorrelate within a few cycles.
-				this.#deps.cache.set(cacheKey, {
-					value: report,
-					expiresAt: Date.now() + USAGE_REPORT_TTL_MS + ttlJitter,
-				});
-				this.#recordUsageHistory(request, report);
-				return report;
+			const owner = crypto.randomUUID();
+			const leases: string[] = [];
+			try {
+				for (const key of [`probe:${cacheKey}`, ...(hostKey ? [`host:${hostKey}`] : [])]) {
+					if (!(await this.#acquireUsageLease(key, owner, timeoutMs ?? this.requestTimeoutMs))) {
+						return this.#deps.cache.lastGood(cacheKey);
+					}
+					leases.push(key);
+				}
+				// A peer may have finished while this process waited for either lease.
+				const updated = this.#deps.cache.get<UsageReport | null>(cacheKey);
+				if (updated && updated.expiresAt > Date.now()) return updated.value;
+				if ((this.#deps.cache.get<null>(failureKey)?.expiresAt ?? 0) > Date.now()) {
+					return this.#deps.cache.lastGood(cacheKey);
+				}
+				if (hostKey && (this.#deps.cache.get<null>(hostKey)?.expiresAt ?? 0) > Date.now()) {
+					return this.#deps.cache.lastGood(cacheKey);
+				}
+				const report = await this.#fetchUsageUncached(request, timeoutMs);
+				// Block marks bump the generation too: a report racing a fresh 429 may
+				// predate it, so it answers this probe but is neither cached nor used
+				// to heal blocks.
+				const invalidated = usageCacheEpoch !== this.#deps.cache.epoch;
+				if (report !== null) {
+					if (invalidated) return report;
+					this.#deps.blocks.reconcileRequest(request, report);
+					const ttlJitter = USAGE_REPORT_TTL_MS * (Math.random() * 0.5 - 0.25);
+					// Success: stagger per-credential cache expiry so all accounts don't
+					// refresh in the same window — Anthropic / OpenAI rate-limit `/usage`
+					// per source IP regardless of account, and synchronized 5-credential
+					// fan-out trips 429s every cycle. With ±25% jitter on TTL the refresh
+					// times decorrelate within a few cycles.
+					this.#deps.cache.set(cacheKey, {
+						value: report,
+						expiresAt: Date.now() + USAGE_REPORT_TTL_MS + ttlJitter,
+					});
+					this.#recordUsageHistory(request, report);
+					return report;
+				}
+				// Failure: apply a short jittered cool-down so the credential doesn't
+				// re-hit the endpoint on every poll. Most providers serve the last good
+				// value through transient failures. Session-cookie providers can opt out
+				// so an expired login does not display stale quota indefinitely.
+				const providerImpl = this.providerFor(request.provider);
+				const retainLastGood = !invalidated && providerImpl?.retainLastGoodOnFailure !== false;
+				const lastGood = retainLastGood ? this.#deps.cache.lastGood(cacheKey) : null;
+				const failureBackoffMs = providerImpl?.failureBackoffMs ?? USAGE_FAILURE_BACKOFF_MS;
+				const backoffJitter = failureBackoffMs * (Math.random() * 0.5 - 0.25);
+				const coolDown = Date.now() + failureBackoffMs + backoffJitter;
+				// Dropping snapshots is not recovery from a failed endpoint. Persist its
+				// cooldown even if a manual refresh or block update raced this probe.
+				// A confirmed reset is the exception: the old failure cannot suppress
+				// the first post-reset probe.
+				if (recoveryEpoch === this.#deps.cache.recoveryEpoch(request.provider)) {
+					this.#deps.cache.set(failureKey, { value: null, expiresAt: coolDown });
+				}
+				if (!invalidated) this.#deps.cache.set(cacheKey, { value: lastGood, expiresAt: coolDown });
+				return lastGood;
+			} finally {
+				for (const key of leases.reverse()) this.#deps.cache.releaseUsageLease(key, owner);
 			}
-			// Failure: apply a short jittered cool-down so the credential doesn't
-			// re-hit the endpoint on every poll. Most providers serve the last good
-			// value through transient failures. Session-cookie providers can opt out
-			// so an expired login does not display stale quota indefinitely.
-			const providerImpl = this.providerFor(request.provider);
-			const retainLastGood = !invalidated && providerImpl?.retainLastGoodOnFailure !== false;
-			const lastGood = retainLastGood ? this.#deps.cache.lastGood(cacheKey) : null;
-			const failureBackoffMs = providerImpl?.failureBackoffMs ?? USAGE_FAILURE_BACKOFF_MS;
-			const backoffJitter = failureBackoffMs * (Math.random() * 0.5 - 0.25);
-			const coolDown = Date.now() + failureBackoffMs + backoffJitter;
-			// Dropping snapshots is not recovery from a failed endpoint. Persist its
-			// cooldown even if a manual refresh or block update raced this probe.
-			// A confirmed reset is the exception: the old failure cannot suppress
-			// the first post-reset probe.
-			if (recoveryEpoch === this.#deps.cache.recoveryEpoch(request.provider)) {
-				this.#deps.cache.set(failureKey, { value: null, expiresAt: coolDown });
-			}
-			if (!invalidated) this.#deps.cache.set(cacheKey, { value: lastGood, expiresAt: coolDown });
-			return lastGood;
 		})().finally(() => {
 			this.#usageRequestInFlight.delete(cacheKey);
 		});
