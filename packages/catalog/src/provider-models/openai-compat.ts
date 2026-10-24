@@ -5612,6 +5612,8 @@ type LiteLLMRichEndpointModel<TApi extends Api> = {
 	hasToolMetadata: boolean;
 	hasSupportedOpenAIParams: boolean;
 	hasCost: boolean;
+	/** Whether an endpoint reported a string `mode`, the only signal that selects a runner api. */
+	hasMode: boolean;
 	reportedCost: Partial<ModelSpec<Api>["cost"]>;
 };
 type LiteLLMRichEndpointFailure = {
@@ -6089,6 +6091,7 @@ function mergeLiteLLMRichEndpointModels<TApi extends Api>(
 		hasToolMetadata: existing.hasToolMetadata || next.hasToolMetadata,
 		hasSupportedOpenAIParams: existing.hasSupportedOpenAIParams || next.hasSupportedOpenAIParams,
 		hasCost: existing.hasCost || next.hasCost,
+		hasMode: existing.hasMode || next.hasMode,
 	};
 }
 
@@ -6166,6 +6169,7 @@ async function fetchLiteLLMRichEndpoint<TApi extends Api>(
 					supportedOpenAIParams !== undefined,
 				hasSupportedOpenAIParams: supportedOpenAIParams !== undefined,
 				hasCost: getLiteLLMCost(entry) !== undefined,
+				hasMode: typeof getLiteLLMMetadataValue(entry, "mode") === "string",
 				reportedCost: getLiteLLMReportedCost(entry),
 			};
 			const existing = deduped.get(model.id);
@@ -6240,7 +6244,7 @@ async function fetchLiteLLMRichModelsInternal<TApi extends Api>(
 			for (const entry of deduped.values()) {
 				if (
 					(entry.supportsVision !== true && entry.supportsVision !== false) ||
-					(options.resolveApi !== undefined && entry.apiRoute === "unknown") ||
+					(options.resolveApi !== undefined && (entry.apiRoute === "unknown" || !entry.hasMode)) ||
 					(Object.keys(entry.reportedCost).length > 0 &&
 						(entry.reportedCost.input === undefined ||
 							entry.reportedCost.output === undefined ||

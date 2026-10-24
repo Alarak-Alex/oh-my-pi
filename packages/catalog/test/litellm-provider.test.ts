@@ -712,6 +712,34 @@ describe("LiteLLM provider discovery", () => {
 		]);
 	});
 
+	test("keeps probing for a decisions mode that only a later endpoint reports (#16939)", async () => {
+		const fetchMock = vi.fn(async (input: string | URL | Request) => {
+			const url = inputUrl(input);
+			if (url === MODELS_DEV_URL) {
+				return Response.json({});
+			}
+			// Vision and provider routing are complete here; only `mode` is missing.
+			if (url === "http://primary:4000/model_group/info") {
+				return Response.json({
+					data: [{ model_group: "typesafe/jev-1.14", providers: ["typesafe"], supports_vision: false }],
+				});
+			}
+			if (url === "http://primary:4000/v2/model/info") {
+				return Response.json({ data: [{ model_group: "typesafe/jev-1.14", model_info: { mode: "decisions" } }] });
+			}
+			return new Response("Not Found", { status: 404 });
+		}) as FetchImpl;
+
+		const models = await litellmModelManagerOptions({
+			baseUrl: "http://primary:4000/v1",
+			fetch: fetchMock,
+		}).fetchDynamicModels?.();
+
+		expect(models?.map(model => ({ id: model.id, api: model.api, kind: model.kind }))).toEqual([
+			{ id: "typesafe/jev-1.14", api: "openai-decisions", kind: "judge" },
+		]);
+	});
+
 	test("does not reintroduce a non-conversational model from later rich metadata", async () => {
 		const calls: string[] = [];
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -1072,6 +1100,7 @@ describe("LiteLLM provider discovery", () => {
 							model_group: "example-real-model",
 							model_name: "Example Real Model",
 							providers: ["anthropic"],
+							mode: "chat",
 							max_input_tokens: 96_000,
 							max_output_tokens: 8_000,
 							supports_function_calling: true,
