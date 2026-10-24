@@ -674,6 +674,44 @@ describe("LiteLLM provider discovery", () => {
 		]);
 	});
 
+	test("routes decisions-mode groups to the Decisions runner as judge rows (#16939)", async () => {
+		const fetchMock = vi.fn(async (input: string | URL | Request) => {
+			const url = inputUrl(input);
+			if (url === MODELS_DEV_URL) {
+				return Response.json({});
+			}
+			// The first endpoint leaves vision unreported, so discovery merges the
+			// next one, which omits `mode` and reports an OpenAI backend.
+			if (url === "http://primary:4000/model_group/info") {
+				return Response.json({
+					data: [
+						{ model_group: "typesafe/jev-1.14", mode: "decisions", providers: ["typesafe"] },
+						{ model_group: "luna", mode: "decisions", providers: ["openai"] },
+						{ model_group: "claude-proxy", mode: "chat", providers: ["anthropic"], supports_vision: false },
+					],
+				});
+			}
+			if (url === "http://primary:4000/v2/model/info") {
+				return Response.json({
+					data: [{ model_group: "luna", providers: ["openai"], supports_vision: true }],
+				});
+			}
+			return new Response("Not Found", { status: 404 });
+		}) as FetchImpl;
+
+		const models = await litellmModelManagerOptions({
+			baseUrl: "http://primary:4000/v1",
+			fetch: fetchMock,
+		}).fetchDynamicModels?.();
+
+		const routes = models?.map(model => ({ id: model.id, api: model.api, kind: model.kind }));
+		expect(routes).toEqual([
+			{ id: "claude-proxy", api: "openai-completions", kind: undefined },
+			{ id: "luna", api: "openai-decisions", kind: "judge" },
+			{ id: "typesafe/jev-1.14", api: "openai-decisions", kind: "judge" },
+		]);
+	});
+
 	test("does not reintroduce a non-conversational model from later rich metadata", async () => {
 		const calls: string[] = [];
 		const fetchMock = vi.fn(async (input: string | URL | Request) => {
@@ -1620,6 +1658,35 @@ describe("LiteLLM provider discovery", () => {
 			"keep-realtime",
 			"keep-responses",
 			"keep-unknown",
+		]);
+	});
+
+	test("routes decisions-mode rows from the /v1/models fallback to the Decisions runner (#16939)", async () => {
+		const fetchMock = vi.fn(async (input: string | URL | Request) => {
+			const url = inputUrl(input);
+			if (url === MODELS_DEV_URL) {
+				return Response.json({});
+			}
+			if (url === "http://fallback:4000/v1/models") {
+				return Response.json({
+					data: [
+						{ id: "typesafe/jev-1.14", mode: "decisions" },
+						{ id: "keep-chat", mode: "chat" },
+					],
+				});
+			}
+			return new Response("Not Found", { status: 404 });
+		}) as FetchImpl;
+
+		const models = await litellmModelManagerOptions({
+			baseUrl: "http://fallback:4000/v1",
+			fetch: fetchMock,
+		}).fetchDynamicModels?.();
+
+		const routes = models?.map(model => ({ id: model.id, api: model.api, kind: model.kind }));
+		expect(routes).toEqual([
+			{ id: "keep-chat", api: "openai-completions", kind: undefined },
+			{ id: "typesafe/jev-1.14", api: "openai-decisions", kind: "judge" },
 		]);
 	});
 

@@ -41,6 +41,7 @@ import {
 	type Provider,
 	type ThinkingConfig,
 	type TokenCost,
+	runnerApiKind,
 } from "../types";
 import {
 	discoveryFetch,
@@ -5703,9 +5704,11 @@ function mapLiteLLMOpenAICompatibleModel(
 		return null;
 	}
 	const model = mapWithBundledReference(entry, defaults, reference);
+	const api = resolveLiteLLMApi(entry, model.id);
 	return {
 		...model,
-		api: resolveLiteLLMApi(undefined, model.id),
+		api,
+		...liteLLMRunnerKind(api),
 		name: stripLiteLLMResellerUsageSuffix(model.name),
 	};
 }
@@ -5839,12 +5842,26 @@ function classifyLiteLLMApiRoute(entry: LiteLLMRichModelEntry | undefined, id: s
 	return isLikelyOpenAIResponsesModelId(modelId) ? "openai" : "unknown";
 }
 
+/**
+ * Transport for a LiteLLM model group: `mode: "decisions"` answers only on the
+ * proxy's `/v1/decisions` route, OpenAI-backed groups use Responses, and every
+ * other group uses `fallbackApi`.
+ */
 export function resolveLiteLLMApi(
 	entry: Record<string, unknown> | undefined,
 	id: string,
 	fallbackApi: Api = "openai-completions",
 ): Api {
+	if (entry && getLiteLLMMetadataValue(entry, "mode") === "decisions") {
+		return "openai-decisions";
+	}
 	return classifyLiteLLMApiRoute(entry, id) === "openai" ? "openai-responses" : fallbackApi;
+}
+
+/** `kind` a LiteLLM row takes on `api`: runner apis (Decisions → judge) leave the chat roster; chat transports add nothing. */
+function liteLLMRunnerKind(api: Api): { kind?: ModelKind } {
+	const kind = runnerApiKind(api);
+	return kind ? { kind } : {};
 }
 
 function isLiteLLMUnusableSentinelPlaceholder(entry: LiteLLMRichModelEntry): boolean {
@@ -5969,10 +5986,12 @@ function mapLiteLLMRichEntry<TApi extends Api>(
 		// compat merge (issue #11982).
 		...(supportsVision === true ? { stripImageInput: false } : {}),
 	};
+	const api = options.resolveApi?.(entry, id) ?? options.api;
 	return {
 		id,
 		name: toLiteLLMDisplayName(modelName, reference?.name, id),
-		api: options.resolveApi?.(entry, id) ?? options.api,
+		api,
+		...liteLLMRunnerKind(api),
 		provider: options.provider,
 		baseUrl: runtimeBaseUrl,
 		contextWindow,
@@ -6038,10 +6057,14 @@ function mergeLiteLLMRichEndpointModels<TApi extends Api>(
 			: existing.apiRoute === "openai" || next.apiRoute === "openai"
 				? "openai"
 				: "unknown";
-	const api = next.apiRoute === apiRoute ? next.model.api : existing.model.api;
+	// Only a group's `mode` selects a runner api, and an endpoint omitting the
+	// mode carries no news for it, so a runner api reported by either side wins.
+	const runnerApi = [next.model.api, existing.model.api].find(api => runnerApiKind(api) !== undefined);
+	const api = runnerApi ?? (next.apiRoute === apiRoute ? next.model.api : existing.model.api);
 	const model: ModelSpec<TApi> = {
 		...existing.model,
 		api,
+		...liteLLMRunnerKind(api),
 		name: next.model.name === next.model.id ? existing.model.name : next.model.name,
 		contextWindow: next.hasContextWindow ? next.model.contextWindow : existing.model.contextWindow,
 		maxTokens: next.hasMaxTokens ? next.model.maxTokens : existing.model.maxTokens,
@@ -6262,7 +6285,8 @@ export function litellmModelManagerOptions(config?: LiteLLMModelManagerConfig): 
 	const baseUrl = config?.baseUrl ?? getDefaultModelDiscoveryBaseUrl("litellm")!;
 	return {
 		providerId: "litellm",
-		// rich-v12 invalidates namespaced proxy ids that missed bare catalog
+		// rich-v13 routes `mode: decisions` groups to the Decisions runner as judge
+		// rows. rich-v12 invalidates namespaced proxy ids that missed bare catalog
 		// references. rich-v11 excluded ClinePass gateway metadata (issue #10932).
 		// rich-v10 filtered known non-conversational LiteLLM modes, keyed the
 		// deployment's `supports_vision` declaration into cached compat, and
