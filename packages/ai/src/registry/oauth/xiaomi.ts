@@ -4,12 +4,13 @@
  * Xiaomi MiMo provides OpenAI-compatible models via
  * https://api.xiaomimimo.com/v1.
  *
- * Standard Xiaomi login accepts both pay-as-you-go keys and regional `tp-...`
- * keys, probing the regional Token Plan clusters in fallback order.
+ * Standard Xiaomi login accepts both pay-as-you-go keys and regional Token Plan
+ * (`tp-...`/`ttp-...`) keys, probing the regional Token Plan clusters in fallback order.
  */
 
 import { authPolicyFor } from "@oh-my-pi/pi-catalog/compat/auth";
 import { providerEntry } from "@oh-my-pi/pi-catalog/compat/providers";
+import { isXiaomiTokenPlanKey } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
 import type { OAuthController } from "./types";
@@ -18,18 +19,12 @@ const PROVIDER_ID = "xiaomi";
 const PROVIDER_NAME = "Xiaomi MiMo";
 const STANDARD_AUTH_URL = "https://platform.xiaomimimo.com/#/console/api-keys";
 const STANDARD_API_BASE_URL = "https://api.xiaomimimo.com/v1";
-const TOKEN_PLAN_KEY_PREFIX = "tp-";
-
-function isTokenPlanKey(apiKey: string): boolean {
-	return apiKey.startsWith(TOKEN_PLAN_KEY_PREFIX);
-}
-
 const VALIDATION_TIMEOUT_MS = 15_000;
 
 async function validateXiaomiApiKey(apiKey: string, signal?: AbortSignal, fetchOverride?: FetchImpl): Promise<void> {
 	const fetchImpl = fetchOverride ?? fetch;
 	// Generic Xiaomi login keeps the historical SGP → AMS → CN fallback.
-	const endpoints = isTokenPlanKey(apiKey)
+	const endpoints = isXiaomiTokenPlanKey(apiKey)
 		? ["xiaomi-token-plan-sgp", "xiaomi-token-plan-ams", "xiaomi-token-plan-cn"].map(provider => {
 				const login = authPolicyFor(provider)?.login;
 				if (login?.kind !== "api-key" || login.validate?.kind !== "chat-completions") {

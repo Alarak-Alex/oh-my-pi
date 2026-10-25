@@ -5521,6 +5521,15 @@ const XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS = [
 	XIAOMI_TOKEN_PLAN_BASE_URLS.cn,
 ];
 
+/**
+ * Whether `apiKey` is a Xiaomi Token Plan key (`tp-…` or `ttp-…`), which only the regional
+ * token-plan clusters accept; `api.xiaomimimo.com` rejects them with 401. Used by Xiaomi
+ * discovery and the generic Xiaomi login hook to route these keys to the token-plan hosts.
+ */
+export function isXiaomiTokenPlanKey(apiKey: string): boolean {
+	return apiKey.startsWith("tp-") || apiKey.startsWith("ttp-");
+}
+
 /** Builds a Xiaomi model manager, preserving Token Plan region provider ids during discovery. */
 export function xiaomiModelManagerOptions(
 	config?: XiaomiModelManagerConfig,
@@ -5532,7 +5541,7 @@ export function xiaomiModelManagerOptions(
 		: XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS;
 	const XIAOMI_STANDARD_BASE_URL = "https://api.xiaomimimo.com/v1";
 	const isTokenPlanProvider = config?.tokenPlanRegion !== undefined || providerId.startsWith("xiaomi-token-plan-");
-	const isTokenPlanKey = isTokenPlanProvider || apiKey?.startsWith("tp-");
+	const isTokenPlanKey = isTokenPlanProvider || (apiKey !== undefined && isXiaomiTokenPlanKey(apiKey));
 	// Token-plan keys always use a TP cluster; config?.baseUrl (from catalog)
 	// would incorrectly pin to the standard endpoint (api.xiaomimimo.com).
 	const baseUrl = isTokenPlanKey ? tokenPlanBaseUrls[0] : (config?.baseUrl ?? XIAOMI_STANDARD_BASE_URL);
