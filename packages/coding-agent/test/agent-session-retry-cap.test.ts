@@ -3369,17 +3369,18 @@ describe("AgentSession retry delay cap", () => {
 	});
 
 	it.each([
-		["sub", 2],
-		["main", 1],
+		["sub", 1],
+		["main", 0],
 	] as const)(
-		"a %s session treats partial text as replay-%s for the Anthropic envelope error",
-		async (agentKind, expectedStreamCalls) => {
+		"a %s session recovers partial text cut by the Anthropic envelope error (%d replays)",
+		async (agentKind, expectedReplays) => {
 			// Production 2026-09-21: `scout` subagents whose stream died with
 			// "stream ended before message_stop" after streaming prose exited 1
 			// instead of retrying. A subagent's streamed text reaches no output
 			// sink (the parent only ever sees the yield), so it is replay-safe
 			// without the print-mode `setTextOutputCommitted(false)` dance; a
-			// main session keeps the veto because the text is already rendered.
+			// main session keeps the replay veto because the text is already
+			// rendered, and instead continues after the committed partial (#16989).
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 			if (!model) {
 				throw new Error("Expected bundled Anthropic test model to exist");
@@ -3473,16 +3474,15 @@ describe("AgentSession retry delay cap", () => {
 			await session.prompt("Trigger envelope error after partial text");
 			await session.waitForIdle();
 
-			expect(streamCalls).toBe(expectedStreamCalls);
-			expect(retryStartEvents).toHaveLength(expectedStreamCalls - 1);
+			expect(streamCalls).toBe(2);
+			expect(retryStartEvents).toHaveLength(expectedReplays);
 			const last = lastAssistant(session);
-			if (agentKind === "sub") {
-				expect(last.stopReason).toBe("stop");
-				expect(last.content).toContainEqual({ type: "text", text: "recovered after envelope retry" });
-			} else {
-				expect(last.stopReason).toBe("error");
-				expect(last.errorMessage).toBe(envelopeError);
-			}
+			expect(last.stopReason).toBe("stop");
+			expect(last.content).toContainEqual({ type: "text", text: "recovered after envelope retry" });
+			const keptPartial = session.agent.state.messages.some(
+				message => message.role === "assistant" && message.errorMessage === envelopeError,
+			);
+			expect(keptPartial).toBe(agentKind === "main");
 		},
 	);
 

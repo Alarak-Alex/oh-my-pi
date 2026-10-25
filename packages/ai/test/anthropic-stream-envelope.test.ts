@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { scheduler } from "node:timers/promises";
 import { convertAnthropicMessages, streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import {
 	AnthropicMessages,
 	type AnthropicMessagesClientLike,
@@ -1682,6 +1683,65 @@ describe("anthropic stream envelope handling", () => {
 		expect(countEvents(events, "error")).toBe(1);
 		expect(result.stopReason).toBe("error");
 		expect(result.errorMessage).toContain("message_stop");
+	});
+
+	describe("in-band error frames", () => {
+		const truncatedFrame = sseFrame("error", {
+			type: "error",
+			error: {
+				type: "server_error",
+				code: "upstream_stream_truncated",
+				message: "upstream stream truncated (no completion event)",
+			},
+		});
+
+		it("fails a text turn cut by an error frame inside the open message as an envelope truncation", async () => {
+			// A gateway that loses the upstream mid-message substitutes an `error`
+			// frame for the terminal events. Streamed text forbids a replay; the
+			// diagnostic must classify like a bare EOF before message_stop so
+			// session recovery can continue from the committed text.
+			const openMessage = createTextSuccessSseFrames("Here is the first half").slice(0, 3);
+			let attempt = 0;
+			vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => {
+				attempt += 1;
+				return createRawSseRequest([...openMessage, truncatedFrame]) as never;
+			});
+
+			const result = await streamAnthropic(model, context, {
+				apiKey: "sk-ant-test",
+				providerRetryWait: async () => {},
+			}).result();
+
+			expect(attempt).toBe(1);
+			expect(result.stopReason).toBe("error");
+			expect(JSON.parse(JSON.stringify(result.content))).toEqual([{ type: "text", text: "Here is the first half" }]);
+			expect(AIError.isStreamEnvelopeTruncationText(result.errorMessage ?? "")).toBe(true);
+			expect(result.errorMessage).toContain("type=server_error code=upstream_stream_truncated");
+			expect(AIError.retriable(AIError.classifyMessage(result))).toBe(true);
+		});
+
+		it("keeps an error frame before message_start a terminal provider rejection", async () => {
+			let attempt = 0;
+			vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => {
+				attempt += 1;
+				return createRawSseRequest([
+					sseFrame("error", {
+						type: "error",
+						error: { type: "authentication_error", message: "invalid x-api-key" },
+					}),
+				]) as never;
+			});
+
+			const result = await streamAnthropic(model, context, {
+				apiKey: "sk-ant-test",
+				providerRetryWait: async () => {},
+			}).result();
+
+			expect(attempt).toBe(1);
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toBe("Anthropic stream error (authentication_error): invalid x-api-key");
+			expect(AIError.isStreamEnvelopeErrorText(result.errorMessage ?? "")).toBe(false);
+		});
 	});
 
 	it("fails a truncated turn with mixed closed and half-streamed tool calls, keeping the closed call", async () => {

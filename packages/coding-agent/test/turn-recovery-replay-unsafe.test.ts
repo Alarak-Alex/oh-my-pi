@@ -1248,10 +1248,12 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(continues).toEqual(["stream-stall-continue"]);
 		});
 
-		it("also resumes HTTP/2 resets, premature closes, and sockets closed mid-body", () => {
+		it("also resumes HTTP/2 resets, premature closes, Anthropic envelope truncations, and sockets closed mid-body", () => {
 			for (const errorMessage of [
 				"Stream closed with error code NGHTTP2_INTERNAL_ERROR",
 				"OpenAI responses stream closed before a terminal response event was received",
+				"Anthropic stream envelope error: stream ended before message_stop",
+				"Anthropic stream envelope error: error frame received before message_stop (type=server_error code=upstream_stream_truncated): upstream stream truncated (no completion event)",
 				"The socket connection was closed unexpectedly before the response completed",
 			]) {
 				const message = stalledTextTurn(undefined, errorMessage);
@@ -1334,6 +1336,13 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				],
 				[stalledTextTurn([{ type: "thinking", thinking: "Unshown reasoning" }]), true],
 				[stalledTextTurn(undefined, "500 Internal Server Error"), true],
+				[
+					stalledTextTurn(
+						undefined,
+						"Anthropic stream envelope error: Bedrock stream chunk contained an invalid Anthropic event envelope",
+					),
+					true,
+				],
 			];
 			for (const [message, committed] of cases) {
 				const { host, messages, continues } = continuationHost(message, committed);

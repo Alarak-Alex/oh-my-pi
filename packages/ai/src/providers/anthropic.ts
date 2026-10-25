@@ -1423,27 +1423,55 @@ type RawMessagePingEvent = { type: "ping" };
 type AnthropicStreamEvent = RawMessageStreamEvent | RawMessagePingEvent;
 const ANTHROPIC_PING_EVENT: RawMessagePingEvent = { type: "ping" };
 
-/**
- * In-stream `error` SSE frames carry an Anthropic error envelope:
- * `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`.
- * Surface the structured type + message instead of the raw JSON blob; the
- * error type token (e.g. `overloaded_error`, `rate_limit_error`) is kept in
- * the message so `isProviderRetryableError`'s classification keys off the
- * structured type rather than incidental JSON substrings.
- */
-function createAnthropicSseStreamError(data: string): Error {
+/** Fields of an in-stream `error` SSE frame: `{"type":"error","error":{"type","code"?,"message"}}`. */
+interface AnthropicSseErrorFrame {
+	type?: string;
+	code?: string;
+	message?: string;
+}
+
+function parseAnthropicSseErrorFrame(data: string): AnthropicSseErrorFrame {
 	try {
-		const parsed = JSON.parse(data) as { error?: { type?: unknown; message?: unknown } };
-		const errorType = typeof parsed?.error?.type === "string" ? parsed.error.type : undefined;
-		const message = typeof parsed?.error?.message === "string" ? parsed.error.message : undefined;
-		if (message) {
-			return new AIError.ProviderResponseError(
-				errorType ? `Anthropic stream error (${errorType}): ${message}` : `Anthropic stream error: ${message}`,
-				{ provider: "anthropic", kind: "output" },
-			);
-		}
+		const parsed = JSON.parse(data) as { error?: { type?: unknown; code?: unknown; message?: unknown } };
+		const error = parsed?.error;
+		return {
+			type: typeof error?.type === "string" ? error.type : undefined,
+			code: typeof error?.code === "string" ? error.code : undefined,
+			message: typeof error?.message === "string" ? error.message : undefined,
+		};
 	} catch {
-		// Not a JSON envelope; fall through to the raw payload.
+		return {};
+	}
+}
+
+/**
+ * Error for an in-stream `error` SSE frame, e.g.
+ * `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`.
+ *
+ * A frame that lands while a message is open (after `message_start`, before
+ * `message_stop`) means the provider or an intermediate gateway cut the
+ * generation: it becomes an {@link AIError.AnthropicStreamEnvelopeError}
+ * truncation, classified like a bare EOF before `message_stop`. Any other
+ * frame is a provider rejection surfaced as `Anthropic stream error (<type>)`.
+ * Both keep the error type token (and `code`, when present) in the message so
+ * classification keys off the structured fields rather than incidental JSON
+ * substrings.
+ */
+function createAnthropicSseStreamError(data: string, state: { messageOpen: boolean }): Error {
+	const frame = parseAnthropicSseErrorFrame(data);
+	if (state.messageOpen) {
+		const tokens = [frame.type && `type=${frame.type}`, frame.code && `code=${frame.code}`].filter(Boolean).join(" ");
+		return new AIError.AnthropicStreamEnvelopeError(
+			`error frame received before message_stop${tokens ? ` (${tokens})` : ""}: ${frame.message ?? data}`,
+		);
+	}
+	if (frame.message) {
+		return new AIError.ProviderResponseError(
+			frame.type
+				? `Anthropic stream error (${frame.type}): ${frame.message}`
+				: `Anthropic stream error: ${frame.message}`,
+			{ provider: "anthropic", kind: "output" },
+		);
 	}
 	return new AIError.ProviderResponseError(data, { provider: "anthropic", kind: "output" });
 }
@@ -1465,7 +1493,7 @@ async function* iterateAnthropicEvents(
 	for await (const sse of readSseEvents(response.body, signal, onSseEvent ? { captureRaw: true } : undefined)) {
 		notifyRawSseEvent(onSseEvent, sse);
 		if (sse.event === "error") {
-			throw createAnthropicSseStreamError(sse.data);
+			throw createAnthropicSseStreamError(sse.data, { messageOpen: sawMessageStart && !sawMessageEnd });
 		}
 
 		if (sse.event === "ping") {
