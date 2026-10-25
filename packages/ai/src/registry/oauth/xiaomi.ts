@@ -10,7 +10,7 @@
 
 import { authPolicyFor } from "@oh-my-pi/pi-catalog/compat/auth";
 import { providerEntry } from "@oh-my-pi/pi-catalog/compat/providers";
-import { isXiaomiTokenPlanKey } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
+import { isXiaomiTokenPlanKey } from "@oh-my-pi/pi-catalog/wire/xiaomi-token-plan";
 import * as AIError from "../../error";
 import type { FetchImpl } from "../../types";
 import type { OAuthController } from "./types";
@@ -117,8 +117,8 @@ export async function loginXiaomi(options: OAuthController): Promise<string> {
 		instructions: "Copy your API key from the Xiaomi MiMo console",
 	});
 	const apiKey = await options.onPrompt({
-		message: "Paste your Xiaomi API key (sk-... or token-plan tp-...)",
-		placeholder: "sk-... or tp-...",
+		message: "Paste your Xiaomi API key (sk-... or Token Plan tp-... / ttp-...)",
+		placeholder: "sk-..., tp-..., or ttp-...",
 	});
 	if (options.signal?.aborted) {
 		throw new AIError.LoginCancelledError();

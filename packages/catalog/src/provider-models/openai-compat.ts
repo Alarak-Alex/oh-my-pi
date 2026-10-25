@@ -70,6 +70,7 @@ import {
 	SINGULARITYAPI_TECH_API_BASE_URL,
 	normalizeSingularityApiBaseUrl,
 } from "../wire/singularityapi";
+import { isXiaomiTokenPlanKey } from "../wire/xiaomi-token-plan";
 import { createBundledReferenceMap, createReferenceResolver, toModelSpec } from "./bundled-references";
 import { getDefaultModelDiscoveryBaseUrl, resolveModelCacheProviderId } from "./cache-provider-id";
 import { getClinePassModelMetadata } from "./cline-pass";
@@ -5520,15 +5521,6 @@ const XIAOMI_TOKEN_PLAN_FALLBACK_BASE_URLS = [
 	XIAOMI_TOKEN_PLAN_BASE_URLS.ams,
 	XIAOMI_TOKEN_PLAN_BASE_URLS.cn,
 ];
-
-/**
- * Whether `apiKey` is a Xiaomi Token Plan key (`tp-…` or `ttp-…`), which only the regional
- * token-plan clusters accept; `api.xiaomimimo.com` rejects them with 401. Used by Xiaomi
- * discovery and the generic Xiaomi login hook to route these keys to the token-plan hosts.
- */
-export function isXiaomiTokenPlanKey(apiKey: string): boolean {
-	return apiKey.startsWith("tp-") || apiKey.startsWith("ttp-");
-}
 
 /** Builds a Xiaomi model manager, preserving Token Plan region provider ids during discovery. */
 export function xiaomiModelManagerOptions(
