@@ -424,7 +424,7 @@ export class MarketplaceManager {
 
 			for (const entry of existing) {
 				if (entry.installPath !== cachePath && !referenced.has(entry.installPath)) {
-					await markSupersededPlugin(entry.installPath);
+					await markSupersededPlugin(this.#opts.pluginsCacheDir, entry.installPath);
 				}
 			}
 		}

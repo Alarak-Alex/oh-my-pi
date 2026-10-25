@@ -145,6 +145,7 @@ describe("cachePlugin, isCached, removeCachedPlugin", () => {
 		await expect(removeCachedPlugin(cacheDir, "my-market", "my-plugin", "1.0.0")).resolves.toBeUndefined();
 	});
 });
+
 describe("pruneSupersededPlugins", () => {
 	let tmpDir: string;
 	let cacheDir: string;
@@ -158,17 +159,33 @@ describe("pruneSupersededPlugins", () => {
 		removeSyncWithRetries(tmpDir);
 	});
 
-	it("keeps a marked old version while another install still references it", async () => {
-		const source = await mkSourcePlugin(tmpDir, "plugin");
-		const oldPath = await cachePlugin(source, cacheDir, "mkt", "plugin", "1.0.0");
-		await markSupersededPlugin(oldPath);
-		await Bun.write(path.join(oldPath, ".orphaned_at"), new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString());
+	const expired = () => new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString();
 
-		await pruneSupersededPlugins(cacheDir, new Set([oldPath]));
-		expect(fs.existsSync(path.join(oldPath, "plugin.json"))).toBe(true);
+	it("never touches a plugin-owned .orphaned_at and prunes only after the grace period", async () => {
+		const source = await mkSourcePlugin(tmpDir, "plugin");
+		await Bun.write(path.join(source, ".orphaned_at", "owned.txt"), "plugin data");
+		const oldPath = await cachePlugin(source, cacheDir, "mkt", "plugin", "1.0.0");
+
+		await markSupersededPlugin(cacheDir, oldPath);
+		expect(await Bun.file(path.join(oldPath, ".orphaned_at", "owned.txt")).text()).toBe("plugin data");
 
 		await pruneSupersededPlugins(cacheDir, new Set());
+		expect(fs.existsSync(path.join(oldPath, "plugin.json"))).toBe(true);
+
+		await Bun.write(path.join(cacheDir, ".superseded", path.basename(oldPath)), expired());
+		await pruneSupersededPlugins(cacheDir, new Set());
 		expect(fs.existsSync(oldPath)).toBe(false);
+	});
+
+	it("drops the marker instead of deleting an install that is referenced again", async () => {
+		const source = await mkSourcePlugin(tmpDir, "plugin");
+		const oldPath = await cachePlugin(source, cacheDir, "mkt", "plugin", "1.0.0");
+		await markSupersededPlugin(cacheDir, oldPath);
+		await Bun.write(path.join(cacheDir, ".superseded", path.basename(oldPath)), expired());
+
+		await pruneSupersededPlugins(cacheDir, new Set([oldPath]));
+		await pruneSupersededPlugins(cacheDir, new Set());
+		expect(fs.existsSync(path.join(oldPath, "plugin.json"))).toBe(true);
 	});
 });
 

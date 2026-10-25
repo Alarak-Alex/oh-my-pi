@@ -1342,7 +1342,11 @@ describe("MarketplaceManager", () => {
 			expect(result.exitCode).toBe(0);
 			expect(result.stdout.toString()).toBe("hook active\n");
 
-			const marker = path.join(previous.installPath, ".orphaned_at");
+			const marker = path.join(
+				path.dirname(previous.installPath),
+				".superseded",
+				path.basename(previous.installPath),
+			);
 			expect(Date.now() - Date.parse(await Bun.file(marker).text())).toBeLessThan(60_000);
 
 			await ctx.manager.refreshStaleMarketplaces();

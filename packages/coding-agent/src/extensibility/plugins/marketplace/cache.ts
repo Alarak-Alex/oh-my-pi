@@ -2,6 +2,8 @@
  * Plugin cache management.
  *
  * Cache layout: `<cacheDir>/<marketplace>___<pluginName>___<version>/`
+ * Superseded markers: `<cacheDir>/.superseded/<marketplace>___<pluginName>___<version>`
+ * (cache entry names cannot start with `.`, so the marker directory never collides).
  *
  * All three components are validated before any filesystem operation:
  *   - marketplace / pluginName: isValidNameSegment (alnum + . - , max 64)
@@ -21,7 +23,7 @@ import { isValidNameSegment } from "./types";
 // Reject anything that could be used for path traversal or shell injection in
 // version strings. Only printable, unambiguous characters are allowed.
 const VERSION_RE = /^[a-zA-Z0-9._+-]+$/;
-const SUPERSEDED_MARKER = ".orphaned_at";
+const SUPERSEDED_DIR = ".superseded";
 const SUPERSEDED_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Return true when `version` is safe for use as a cache path component. */
@@ -90,44 +92,43 @@ export async function cachePlugin(
 	return targetPath;
 }
 
-/** Keep a superseded install available to extensions already loaded in another session. */
-export async function markSupersededPlugin(installPath: string): Promise<void> {
-	const marker = path.join(installPath, SUPERSEDED_MARKER);
-	await fs.rm(marker, { force: true });
-	try {
-		await fs.writeFile(marker, new Date().toISOString(), { flag: "wx" });
-	} catch (err) {
-		// A cache removed outside the manager need not block its replacement.
-		if (isEnoent(err)) return;
-		throw err;
+/**
+ * Keep a superseded install available to extensions already loaded in another session.
+ * The timestamp lives outside the copied plugin tree so package files are never touched.
+ * Installs outside `cacheDir` have no marker slot and are removed immediately.
+ */
+export async function markSupersededPlugin(cacheDir: string, installPath: string): Promise<void> {
+	if (path.dirname(path.resolve(installPath)) !== path.resolve(cacheDir)) {
+		await fs.rm(installPath, { recursive: true, force: true });
+		return;
 	}
+	await Bun.write(path.join(cacheDir, SUPERSEDED_DIR, path.basename(installPath)), new Date().toISOString());
 }
 
 /** Remove superseded installs after the grace period, unless a registry still references them. */
 export async function pruneSupersededPlugins(cacheDir: string, installedPaths: Set<string>): Promise<void> {
-	let entries;
+	const markerDir = path.join(cacheDir, SUPERSEDED_DIR);
+	let names: string[];
 	try {
-		entries = await fs.readdir(cacheDir, { withFileTypes: true });
+		names = await fs.readdir(markerDir);
 	} catch (err) {
 		if (isEnoent(err)) return;
 		throw err;
 	}
 
 	const now = Date.now();
-	for (const entry of entries) {
-		if (!entry.isDirectory()) continue;
-		const installPath = path.join(cacheDir, entry.name);
-		if (installedPaths.has(installPath)) continue;
-		let markedAt: string;
-		try {
-			markedAt = await Bun.file(path.join(installPath, SUPERSEDED_MARKER)).text();
-		} catch (err) {
-			if (isEnoent(err)) continue;
-			throw err;
+	for (const name of names) {
+		const marker = path.join(markerDir, name);
+		const installPath = path.join(cacheDir, name);
+		// Reinstalled at the same version: the install is live again.
+		if (installedPaths.has(installPath)) {
+			await fs.rm(marker, { force: true });
+			continue;
 		}
-		const timestamp = Date.parse(markedAt);
+		const timestamp = Date.parse(await Bun.file(marker).text());
 		if (Number.isNaN(timestamp) || now - timestamp < SUPERSEDED_GRACE_MS) continue;
 		await fs.rm(installPath, { recursive: true, force: true });
+		await fs.rm(marker, { force: true });
 	}
 }
 
