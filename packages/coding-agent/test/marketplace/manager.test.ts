@@ -511,7 +511,7 @@ describe("MarketplaceManager", () => {
 		expect(fs.realpathSync(linkedLink)).toBe(fs.realpathSync(linkedPackage));
 	});
 
-	it("migrates the other scope's runtime key when a shared-cache reinstall renames", async () => {
+	it("migrates the other scope's runtime key when a fresh install refreshes the shared cache", async () => {
 		const marketplaceDir = buildNamedMarketplace(
 			path.join(ctx.tmpDir, "gadget-marketplace"),
 			"gadget-market",
@@ -520,26 +520,42 @@ describe("MarketplaceManager", () => {
 		const sourcePackage = path.join(marketplaceDir, "plugins", "gadget", "package.json");
 		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "Gadget", version: "1.0.0" }));
 		await ctx.manager.addMarketplace(marketplaceDir);
-		// Same plugin+version in both scopes → both reference the one shared cache.
-		await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "user" });
-		await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "project" });
-		const projectRoot = path.join(ctx.tmpDir, "project");
+		const userEntry = await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "user" });
 		expect(hasExactEntry(path.join(ctx.tmpDir, "node_modules"), "Gadget")).toBe(true);
-		expect(hasExactEntry(path.join(projectRoot, "node_modules"), "Gadget")).toBe(true);
 
-		// Force reinstall in the user scope with only the manifest name casing changed.
+		// The project scope joins the same plugin+version cache after a manifest name-case change.
 		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "gadget", version: "1.0.0" }));
-		await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "user", force: true });
+		const projectEntry = await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "project" });
+		expect(projectEntry.installPath).toBe(userEntry.installPath);
 
 		// Both scopes resolve the shared cache under the new name — no stale link or key.
+		const projectRoot = path.join(ctx.tmpDir, "project");
 		expect(hasExactEntry(path.join(ctx.tmpDir, "node_modules"), "gadget")).toBe(true);
 		expect(hasExactEntry(path.join(ctx.tmpDir, "node_modules"), "Gadget")).toBe(false);
 		expect(hasExactEntry(path.join(projectRoot, "node_modules"), "gadget")).toBe(true);
-		expect(hasExactEntry(path.join(projectRoot, "node_modules"), "Gadget")).toBe(false);
 		const userConfig = await Bun.file(path.join(ctx.tmpDir, "omp-plugins.lock.json")).json();
 		expect(Object.keys(userConfig.plugins)).toEqual(["gadget"]);
 		const projectConfig = await Bun.file(path.join(projectRoot, "omp-plugins.lock.json")).json();
 		expect(Object.keys(projectConfig.plugins)).toEqual(["gadget"]);
+	});
+
+	it("a same-version reinstall in one scope leaves the other scope's shared cache intact", async () => {
+		await ctx.manager.addMarketplace(FIXTURE_DIR);
+		const userEntry = await ctx.manager.installPlugin("hello-plugin", "test-marketplace", { scope: "user" });
+		await ctx.manager.installPlugin("hello-plugin", "test-marketplace", { scope: "project" });
+
+		const reinstalled = await ctx.manager.installPlugin("hello-plugin", "test-marketplace", {
+			scope: "user",
+			force: true,
+		});
+
+		expect(reinstalled.installPath).not.toBe(userEntry.installPath);
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project", "installed_plugins.json"));
+		const projectPath = projectReg.plugins["hello-plugin@test-marketplace"]![0].installPath;
+		expect(projectPath).toBe(userEntry.installPath);
+		expect(fs.existsSync(path.join(projectPath, "package.json"))).toBe(true);
+		// Still referenced by the project scope, so never queued for pruning.
+		expect(fs.existsSync(path.join(ctx.tmpDir, "cache", "plugins", ".superseded"))).toBe(false);
 	});
 
 	it("rejects a catalog rename whose cache path case-collides with an installed plugin", async () => {
@@ -988,13 +1004,12 @@ describe("MarketplaceManager", () => {
 
 	it("installPlugin with force:true → replaces existing", async () => {
 		await ctx.manager.addMarketplace(FIXTURE_DIR);
-		const first = await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
+		await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
 		await ctx.manager.setPluginEnabled("hello-plugin@test-marketplace", false);
 		const second = await ctx.manager.installPlugin("hello-plugin", "test-marketplace", {
 			force: true,
 		});
 
-		expect(second.installPath).toBe(first.installPath);
 		expect(fs.existsSync(second.installPath)).toBe(true);
 
 		const runtimeConfig = await Bun.file(path.join(ctx.tmpDir, "omp-plugins.lock.json")).json();
@@ -1356,6 +1371,33 @@ describe("MarketplaceManager", () => {
 			await ctx.manager.refreshStaleMarketplaces();
 			expect(fs.existsSync(previous.installPath)).toBe(false);
 			expect((await ctx.manager.listInstalledPlugins())[0].entries[0].version).toBe("2.0.0");
+		});
+
+		it("keeps a removed script runnable for open sessions across a same-version upgrade", async () => {
+			const script = path.join(mktDir, "plugins", "hello-plugin", "extensions", "hook.ts");
+			await Bun.write(script, "process.stdout.write('hook active\\n');\n");
+			await ctx.manager.addMarketplace(mktDir);
+			const previous = await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
+			const loadedScript = path.join(previous.installPath, "extensions", "hook.ts");
+
+			// The update drops the script without bumping any version.
+			await fs.promises.rm(script);
+			const current = await ctx.manager.upgradePlugin("hello-plugin@test-marketplace");
+
+			expect(current.version).toBe(previous.version);
+			expect(fs.existsSync(path.join(current.installPath, "extensions", "hook.ts"))).toBe(false);
+			const result = Bun.spawnSync([process.execPath, loadedScript], { stdout: "pipe", stderr: "pipe" });
+			expect(result.stdout.toString()).toBe("hook active\n");
+
+			const marker = path.join(
+				path.dirname(previous.installPath),
+				".superseded",
+				path.basename(previous.installPath),
+			);
+			await Bun.write(marker, new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString());
+			await ctx.manager.refreshStaleMarketplaces();
+			expect(fs.existsSync(previous.installPath)).toBe(false);
+			expect(fs.existsSync(path.join(current.installPath, "package.json"))).toBe(true);
 		});
 
 		it("upgrades when the prior cached directory was already removed", async () => {

@@ -350,20 +350,20 @@ export class MarketplaceManager {
 		});
 
 		// The cache is keyed by marketplace/plugin/version and shared across scopes,
-		// so a forced reinstall replaces the copy the OTHER scope also references.
-		// Capture that scope's current runtime names from the cache before it is
-		// replaced, so a manifest rename can migrate its link/lockfile key too.
+		// so a fresh install joining a cache the OTHER scope references refreshes it
+		// in place. Capture that scope's current runtime names from the cache before
+		// it is replaced, so a manifest rename can migrate its link/lockfile key too.
 		const otherScope: "user" | "project" = scope === "user" ? "project" : "user";
 		const otherRegistryPath =
 			otherScope === "project" ? this.#opts.projectInstalledRegistryPath : this.#opts.installedRegistryPath;
 		const otherScopeOldNames = new Map<string, string>();
 
-		// 5. Resolve registration identity before replacing an active cache. A
-		// forced reinstall can reuse the same cache key, so validation after
-		// cachePlugin would already have destroyed the prior contents on failure.
+		// 5. Resolve registration identity before writing the cache, so a failed
+		// validation never leaves a half-registered copy behind.
 		let version!: string;
 		let cachePath!: string;
 		let packageName!: string;
+		let prospectiveCachePath!: string;
 		let previousPackageNames!: Set<string>;
 		let otherScopeEntries: readonly InstalledPluginEntry[] = [];
 		try {
@@ -379,10 +379,8 @@ export class MarketplaceManager {
 
 			version = (await this.#resolveCatalogVersion(pluginEntry, sourcePath)) ?? "0.0.0";
 			packageName = await this.#resolvePluginPackageName(sourcePath, name);
-			// Resolve the runtime names this plugin id currently owns BEFORE cachePlugin
-			// can overwrite the existing cache. A forced reinstall reuses the same cache
-			// key, so reading afterward would see only the new name and strand the old
-			// runtime link and lockfile key (e.g. a case-only rename Foo → foo).
+			// Resolve the runtime names this plugin id currently owns before cachePlugin
+			// can refresh a shared cache in place.
 			previousPackageNames = await this.#resolveInstalledPackageNames(existing ?? [], name);
 			const targetReg = await readInstalledPluginsRegistry(registryPath);
 			await this.#assertRuntimePackageNameAvailable(scope, packageName, targetReg, pluginId, previousPackageNames);
@@ -391,13 +389,20 @@ export class MarketplaceManager {
 			// (e.g. an old "Foo" still installed after a catalog rename to "foo")
 			// resolves to the same dir, so cachePlugin would clobber it. Reject before
 			// replacing the cache, checking both scopes' installed registries.
-			const prospectiveCachePath = getCachedPluginPath(this.#opts.pluginsCacheDir, marketplace, name, version);
+			prospectiveCachePath = getCachedPluginPath(this.#opts.pluginsCacheDir, marketplace, name, version);
 			const registriesToCheck =
 				otherRegistryPath && otherRegistryPath !== registryPath
 					? [targetReg, await readInstalledPluginsRegistry(otherRegistryPath)]
 					: [targetReg];
 			this.#assertCachePathAvailable(prospectiveCachePath, pluginId, registriesToCheck);
-			cachePath = await cachePlugin(sourcePath, this.#opts.pluginsCacheDir, marketplace, name, version);
+			// A reinstall never rewrites a directory a running session may still execute
+			// from; only a fresh install joining the other scope's shared cache does.
+			const joinsSharedCache =
+				otherScopeEntries.some(entry => entry.installPath === prospectiveCachePath) &&
+				!existing?.some(entry => entry.installPath === prospectiveCachePath);
+			cachePath = await cachePlugin(sourcePath, this.#opts.pluginsCacheDir, marketplace, name, version, {
+				preserveExisting: !joinsSharedCache,
+			});
 			await this.#writeEmbeddedLspConfig(pluginEntry, cachePath);
 			await this.#writeEmbeddedDapConfig(pluginEntry, cachePath);
 		} finally {
@@ -407,12 +412,15 @@ export class MarketplaceManager {
 			}
 		}
 
-		// Keep prior versions for sessions still running their extension code.
+		// Keep replaced installs for sessions still running their extension code.
+		const replaced = new Set(existing?.map(entry => entry.installPath));
+		if (cachePath !== prospectiveCachePath) replaced.add(prospectiveCachePath);
+		replaced.delete(cachePath);
 		if (existing && existing.length > 0) {
-			// Remove from scope-appropriate registry first, then cross-check refs before marking.
 			const prunedReg = removeInstalledPlugin(await readInstalledPluginsRegistry(registryPath), pluginId);
 			await writeInstalledPluginsRegistry(registryPath, prunedReg);
-
+		}
+		if (replaced.size > 0) {
 			// Read both registries AFTER removal — only mark paths no longer referenced by either.
 			const [userReg, projectReg] = await Promise.all([
 				readInstalledPluginsRegistry(this.#opts.installedRegistryPath),
@@ -421,10 +429,9 @@ export class MarketplaceManager {
 					: Promise.resolve({ version: 2 as const, plugins: {} as Record<string, InstalledPluginEntry[]> }),
 			]);
 			const referenced = collectReferencedPaths(userReg, projectReg);
-
-			for (const entry of existing) {
-				if (entry.installPath !== cachePath && !referenced.has(entry.installPath)) {
-					await markSupersededPlugin(this.#opts.pluginsCacheDir, entry.installPath);
+			for (const installPath of replaced) {
+				if (!referenced.has(installPath)) {
+					await markSupersededPlugin(this.#opts.pluginsCacheDir, installPath);
 				}
 			}
 		}

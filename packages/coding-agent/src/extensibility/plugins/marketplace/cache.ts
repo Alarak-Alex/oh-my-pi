@@ -1,8 +1,11 @@
 /**
  * Plugin cache management.
  *
- * Cache layout: `<cacheDir>/<marketplace>___<pluginName>___<version>/`
- * Superseded markers: `<cacheDir>/.superseded/<marketplace>___<pluginName>___<version>`
+ * Cache layout: `<cacheDir>/<marketplace>___<pluginName>___<version>/`, or
+ * `<cacheDir>/<marketplace>___<pluginName>___<version>@<generation>/` when a same-version
+ * reinstall must not rewrite a directory a running session may still use (`@` is not a valid
+ * version character, so a generation never collides with another version).
+ * Superseded markers: `<cacheDir>/.superseded/<cache entry name>`
  * (cache entry names cannot start with `.`, so the marker directory never collides).
  *
  * All three components are validated before any filesystem operation:
@@ -61,8 +64,9 @@ export function getCachedPluginPath(
 /**
  * Copy `sourcePath` into the cache, returning the absolute cache path.
  *
- * Idempotent: if the target already exists it is removed before copying,
- * so a partial previous cache is never silently reused.
+ * An existing version directory is replaced atomically, so a partial previous cache is never
+ * silently reused. With `preserveExisting`, an existing directory is left intact and the copy
+ * goes to a fresh `@<generation>` sibling, so running sessions keep the files they loaded.
  */
 export async function cachePlugin(
 	sourcePath: string,
@@ -70,8 +74,12 @@ export async function cachePlugin(
 	marketplace: string,
 	pluginName: string,
 	version: string,
+	options?: { preserveExisting?: boolean },
 ): Promise<string> {
-	const targetPath = getCachedPluginPath(cacheDir, marketplace, pluginName, version);
+	let targetPath = getCachedPluginPath(cacheDir, marketplace, pluginName, version);
+	if (options?.preserveExisting && nodeFs.existsSync(targetPath)) {
+		targetPath = `${targetPath}@${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+	}
 
 	// Ensure cache directory exists before writing into it
 	await fs.mkdir(cacheDir, { recursive: true });
