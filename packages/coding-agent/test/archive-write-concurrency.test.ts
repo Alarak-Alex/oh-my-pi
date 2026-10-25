@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../src/config/settings";
 import type { ToolSession } from "../src/tools";
 import { WriteTool } from "../src/tools/write";
+import * as piUtils from "@oh-my-pi/pi-utils";
 import { readArchiveEntries, writeArchive } from "@oh-my-pi/pi-utils/ar";
 
 const workerScript = path.join(import.meta.dir, "fixtures", "archive-write-worker.ts");
@@ -14,8 +15,8 @@ let root: string;
 beforeEach(async () => {
 	root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-archive-write-race-"));
 });
-
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await fs.rm(root, { recursive: true, force: true });
 });
 
@@ -26,6 +27,18 @@ async function assertBothMembers(archive: string): Promise<void> {
 		expect(member).toBeDefined();
 		expect(await new Response(member).text()).toBe(`new ${name}`);
 	}
+}
+
+function createSession(cwd: string): ToolSession {
+	return {
+		cwd,
+		hasUI: false,
+		settings: Settings.isolated(),
+		getSessionFile: () => path.join(cwd, "session.jsonl"),
+		getSessionSpawns: () => "*",
+		getArtifactsDir: () => cwd,
+		allocateOutputArtifact: async () => ({ id: "1", path: path.join(cwd, "output.log") }),
+	};
 }
 
 async function runIndependentWriters(aPath: string, bPath: string): Promise<void> {
@@ -101,19 +114,45 @@ describe("concurrent archive member writes", () => {
 			["b.txt", "old b"],
 			["padding", padding],
 		]);
-		const session: ToolSession = {
-			cwd: root,
-			hasUI: false,
-			settings: Settings.isolated(),
-			getSessionFile: () => path.join(root, "session.jsonl"),
-			getSessionSpawns: () => "*",
-			getArtifactsDir: () => root,
-			allocateOutputArtifact: async () => ({ id: "1", path: path.join(root, "output.log") }),
-		};
+		const session = createSession(root);
 		await Promise.all([
 			new WriteTool(session).execute("a", { path: `${archive}:a.txt`, content: "new a" }),
 			new WriteTool(session).execute("b", { path: `${archive}:b.txt`, content: "new b" }),
 		]);
 		await assertBothMembers(archive);
+	});
+	it("does not publish a canceled write after a contended lock is released", async () => {
+		const archive = path.join(root, "bundle.tar");
+		await writeArchive(archive, "tar", [["a.txt", "original"]]);
+		const lock = await piUtils.acquireFileLock(archive);
+		const entered = Promise.withResolvers<void>();
+		const finished = Promise.withResolvers<void>();
+		const withFileLock = piUtils.withFileLock;
+		vi.spyOn(piUtils, "withFileLock").mockImplementation(async (filePath, fn, options) => {
+			entered.resolve();
+			try {
+				return await withFileLock(filePath, fn, options);
+			} finally {
+				finished.resolve();
+			}
+		});
+		try {
+			const controller = new AbortController();
+			const pending = new WriteTool(createSession(root)).execute(
+				"canceled",
+				{ path: `${archive}:a.txt`, content: "canceled" },
+				controller.signal,
+			);
+			await entered.promise;
+			controller.abort();
+			await expect(pending).rejects.toThrow();
+		} finally {
+			lock.release();
+		}
+		// The real lock attempt must settle before checking disk: untilAborted
+		// rejects its caller before an uncanceled waiter would stop running.
+		await finished.promise;
+		const entries = await readArchiveEntries({ path: archive, format: "tar" });
+		expect(await new Response(entries.get("a.txt")).text()).toBe("original");
 	});
 });
