@@ -9,6 +9,8 @@ import {
 	getCachedPluginPath,
 	isCached,
 	isValidVersionForCache,
+	markSupersededPlugin,
+	pruneSupersededPlugins,
 	removeCachedPlugin,
 } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/marketplace";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
@@ -141,6 +143,32 @@ describe("cachePlugin, isCached, removeCachedPlugin", () => {
 	it("removeCachedPlugin is a no-op when entry does not exist", async () => {
 		// Should not throw
 		await expect(removeCachedPlugin(cacheDir, "my-market", "my-plugin", "1.0.0")).resolves.toBeUndefined();
+	});
+});
+describe("pruneSupersededPlugins", () => {
+	let tmpDir: string;
+	let cacheDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-superseded-test-"));
+		cacheDir = path.join(tmpDir, "cache");
+	});
+
+	afterEach(() => {
+		removeSyncWithRetries(tmpDir);
+	});
+
+	it("keeps a marked old version while another install still references it", async () => {
+		const source = await mkSourcePlugin(tmpDir, "plugin");
+		const oldPath = await cachePlugin(source, cacheDir, "mkt", "plugin", "1.0.0");
+		await markSupersededPlugin(oldPath);
+		await Bun.write(path.join(oldPath, ".orphaned_at"), new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString());
+
+		await pruneSupersededPlugins(cacheDir, new Set([oldPath]));
+		expect(fs.existsSync(path.join(oldPath, "plugin.json"))).toBe(true);
+
+		await pruneSupersededPlugins(cacheDir, new Set());
+		expect(fs.existsSync(oldPath)).toBe(false);
 	});
 });
 

@@ -21,6 +21,8 @@ import { isValidNameSegment } from "./types";
 // Reject anything that could be used for path traversal or shell injection in
 // version strings. Only printable, unambiguous characters are allowed.
 const VERSION_RE = /^[a-zA-Z0-9._+-]+$/;
+const SUPERSEDED_MARKER = ".orphaned_at";
+const SUPERSEDED_GRACE_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** Return true when `version` is safe for use as a cache path component. */
 export function isValidVersionForCache(version: string): boolean {
@@ -86,6 +88,47 @@ export async function cachePlugin(
 	}
 
 	return targetPath;
+}
+
+/** Keep a superseded install available to extensions already loaded in another session. */
+export async function markSupersededPlugin(installPath: string): Promise<void> {
+	const marker = path.join(installPath, SUPERSEDED_MARKER);
+	await fs.rm(marker, { force: true });
+	try {
+		await fs.writeFile(marker, new Date().toISOString(), { flag: "wx" });
+	} catch (err) {
+		// A cache removed outside the manager need not block its replacement.
+		if (isEnoent(err)) return;
+		throw err;
+	}
+}
+
+/** Remove superseded installs after the grace period, unless a registry still references them. */
+export async function pruneSupersededPlugins(cacheDir: string, installedPaths: Set<string>): Promise<void> {
+	let entries;
+	try {
+		entries = await fs.readdir(cacheDir, { withFileTypes: true });
+	} catch (err) {
+		if (isEnoent(err)) return;
+		throw err;
+	}
+
+	const now = Date.now();
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const installPath = path.join(cacheDir, entry.name);
+		if (installedPaths.has(installPath)) continue;
+		let markedAt: string;
+		try {
+			markedAt = await Bun.file(path.join(installPath, SUPERSEDED_MARKER)).text();
+		} catch (err) {
+			if (isEnoent(err)) continue;
+			throw err;
+		}
+		const timestamp = Date.parse(markedAt);
+		if (Number.isNaN(timestamp) || now - timestamp < SUPERSEDED_GRACE_MS) continue;
+		await fs.rm(installPath, { recursive: true, force: true });
+	}
 }
 
 /**

@@ -1326,6 +1326,45 @@ describe("MarketplaceManager", () => {
 			expect(installed[0].entries[0].version).toBe("2.0.0");
 		});
 
+		it("keeps a running extension's script available after a version upgrade", async () => {
+			const script = path.join(mktDir, "plugins", "hello-plugin", "extensions", "hook.ts");
+			await Bun.write(script, "process.stdout.write('hook active\\n');\n");
+			await ctx.manager.addMarketplace(mktDir);
+			const previous = await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
+			const loadedScript = path.join(previous.installPath, "extensions", "hook.ts");
+			const before = Bun.spawnSync([process.execPath, loadedScript], { stdout: "pipe", stderr: "pipe" });
+			expect(before.stdout.toString()).toBe("hook active\n");
+
+			await setPluginJsonVersion("2.0.0");
+			await ctx.manager.upgradePlugin("hello-plugin@test-marketplace");
+
+			const result = Bun.spawnSync([process.execPath, loadedScript], { stdout: "pipe", stderr: "pipe" });
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout.toString()).toBe("hook active\n");
+
+			const marker = path.join(previous.installPath, ".orphaned_at");
+			expect(Date.now() - Date.parse(await Bun.file(marker).text())).toBeLessThan(60_000);
+
+			await ctx.manager.refreshStaleMarketplaces();
+			expect(Bun.spawnSync([process.execPath, loadedScript]).exitCode).toBe(0);
+
+			await Bun.write(marker, new Date(Date.now() - 4 * 24 * 60 * 60 * 1000).toISOString());
+			await ctx.manager.refreshStaleMarketplaces();
+			expect(fs.existsSync(previous.installPath)).toBe(false);
+			expect((await ctx.manager.listInstalledPlugins())[0].entries[0].version).toBe("2.0.0");
+		});
+
+		it("upgrades when the prior cached directory was already removed", async () => {
+			await ctx.manager.addMarketplace(mktDir);
+			const previous = await ctx.manager.installPlugin("hello-plugin", "test-marketplace");
+			await fs.promises.rm(previous.installPath, { recursive: true });
+			await setPluginJsonVersion("2.0.0");
+
+			const current = await ctx.manager.upgradePlugin("hello-plugin@test-marketplace");
+			expect(current.version).toBe("2.0.0");
+			expect(fs.existsSync(current.installPath)).toBe(true);
+		});
+
 		it("upgradePlugin rejects invalid plugin ID", async () => {
 			await expect(ctx.manager.upgradePlugin("no-at-sign")).rejects.toThrow(/Invalid plugin ID/);
 		});

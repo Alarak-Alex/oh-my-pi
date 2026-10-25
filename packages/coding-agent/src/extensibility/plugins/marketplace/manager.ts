@@ -15,7 +15,13 @@ import { expandTilde } from "../../../tools/path-utils";
 import { normalizePluginRuntimeConfig, writePluginRuntimeConfig } from "../runtime-config";
 import type { PluginRuntimeConfig, PluginRuntimeState } from "../types";
 
-import { cachePlugin, getCachedPluginPath, isValidVersionForCache } from "./cache";
+import {
+	cachePlugin,
+	getCachedPluginPath,
+	isValidVersionForCache,
+	markSupersededPlugin,
+	pruneSupersededPlugins,
+} from "./cache";
 import {
 	classifySource,
 	fetchMarketplace,
@@ -333,6 +339,7 @@ export class MarketplaceManager {
 	): Promise<InstalledPluginEntry> {
 		const { scope, registryPath, catalog, marketplaceClonePath, pluginEntry, pluginId, existing } =
 			await this.#validateInstall(name, marketplace, options);
+		await this.#pruneSupersededPlugins();
 
 		// 4. Resolve source path.
 
@@ -400,13 +407,13 @@ export class MarketplaceManager {
 			}
 		}
 
-		// Only now clean up old entries — new cache succeeded, so it is safe to remove old ones.
+		// Keep prior versions for sessions still running their extension code.
 		if (existing && existing.length > 0) {
-			// Remove from scope-appropriate registry first, then cross-check refs before disk deletion.
+			// Remove from scope-appropriate registry first, then cross-check refs before marking.
 			const prunedReg = removeInstalledPlugin(await readInstalledPluginsRegistry(registryPath), pluginId);
 			await writeInstalledPluginsRegistry(registryPath, prunedReg);
 
-			// Read both registries AFTER removal — only delete paths no longer referenced by either.
+			// Read both registries AFTER removal — only mark paths no longer referenced by either.
 			const [userReg, projectReg] = await Promise.all([
 				readInstalledPluginsRegistry(this.#opts.installedRegistryPath),
 				this.#opts.projectInstalledRegistryPath
@@ -417,7 +424,7 @@ export class MarketplaceManager {
 
 			for (const entry of existing) {
 				if (entry.installPath !== cachePath && !referenced.has(entry.installPath)) {
-					await fs.rm(entry.installPath, { recursive: true, force: true });
+					await markSupersededPlugin(entry.installPath);
 				}
 			}
 		}
@@ -756,6 +763,7 @@ export class MarketplaceManager {
 	// Per-marketplace failures are silently swallowed — offline is fine.
 	async refreshStaleMarketplaces(): Promise<void> {
 		await pruneAbandonedMarketplaceClones(this.#opts.marketplacesCacheDir);
+		await this.#pruneSupersededPlugins();
 		const reg = await readMarketplacesRegistry(this.#opts.marketplacesRegistryPath);
 		const staleMs = 24 * 60 * 60 * 1000;
 		for (const entry of reg.marketplaces) {
@@ -915,6 +923,16 @@ export class MarketplaceManager {
 	}
 
 	// ── Private helpers ───────────────────────────────────────────────────────
+
+	async #pruneSupersededPlugins(): Promise<void> {
+		const [userReg, projectReg] = await Promise.all([
+			readInstalledPluginsRegistry(this.#opts.installedRegistryPath),
+			this.#opts.projectInstalledRegistryPath
+				? readInstalledPluginsRegistry(this.#opts.projectInstalledRegistryPath)
+				: Promise.resolve({ version: 2 as const, plugins: {} as Record<string, InstalledPluginEntry[]> }),
+		]);
+		await pruneSupersededPlugins(this.#opts.pluginsCacheDir, collectReferencedPaths(userReg, projectReg));
+	}
 
 	#runtimeRoot(scope: "user" | "project"): string {
 		return path.dirname(this.#registryPath(scope));
