@@ -1720,6 +1720,55 @@ describe("anthropic stream envelope handling", () => {
 			expect(AIError.retriable(AIError.classifyMessage(result))).toBe(true);
 		});
 
+		it("keeps authentication failures inside an open message terminal", async () => {
+			const openMessage = createTextSuccessSseFrames("Here is the first half").slice(0, 3);
+			let attempt = 0;
+			vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => {
+				attempt += 1;
+				return createRawSseRequest([
+					...openMessage,
+					sseFrame("error", {
+						type: "error",
+						error: { type: "authentication_error", message: "invalid x-api-key" },
+					}),
+				]) as never;
+			});
+
+			const result = await streamAnthropic(model, context, {
+				apiKey: "sk-ant-test",
+				providerRetryWait: async () => {},
+			}).result();
+
+			expect(attempt).toBe(1);
+			expect(result.stopReason).toBe("error");
+			expect(JSON.parse(JSON.stringify(result.content))).toEqual([{ type: "text", text: "Here is the first half" }]);
+			expect(result.errorMessage).toBe("Anthropic stream error (authentication_error): invalid x-api-key");
+			expect(AIError.isStreamEnvelopeTruncationText(result.errorMessage ?? "")).toBe(false);
+			expect(AIError.retriable(AIError.classifyMessage(result))).toBe(false);
+		});
+
+		it("does not infer truncation from an unmarked server error after text", async () => {
+			const openMessage = createTextSuccessSseFrames("Here is the first half").slice(0, 3);
+			vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(
+				() =>
+					createRawSseRequest([
+						...openMessage,
+						sseFrame("error", {
+							type: "error",
+							error: { type: "server_error", message: "upstream stream truncated (no completion event)" },
+						}),
+					]) as never,
+			);
+
+			const result = await streamAnthropic(model, context, { apiKey: "sk-ant-test" }).result();
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toBe(
+				"Anthropic stream error (server_error): upstream stream truncated (no completion event)",
+			);
+			expect(AIError.isStreamEnvelopeTruncationText(result.errorMessage ?? "")).toBe(false);
+		});
+
 		it("keeps an error frame before message_start a terminal provider rejection", async () => {
 			let attempt = 0;
 			vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() => {

@@ -1448,21 +1448,20 @@ function parseAnthropicSseErrorFrame(data: string): AnthropicSseErrorFrame {
  * Error for an in-stream `error` SSE frame, e.g.
  * `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`.
  *
- * A frame that lands while a message is open (after `message_start`, before
- * `message_stop`) means the provider or an intermediate gateway cut the
- * generation: it becomes an {@link AIError.AnthropicStreamEnvelopeError}
- * truncation, classified like a bare EOF before `message_stop`. Any other
- * frame is a provider rejection surfaced as `Anthropic stream error (<type>)`.
- * Both keep the error type token (and `code`, when present) in the message so
- * classification keys off the structured fields rather than incidental JSON
- * substrings.
+ * Only a gateway's explicit `server_error` with
+ * `code=upstream_stream_truncated` inside an open message (after
+ * `message_start`, before `message_stop`) identifies a truncated generation.
+ * It becomes an {@link AIError.AnthropicStreamEnvelopeError}, classified like
+ * a bare EOF before `message_stop`. Other frames remain provider rejections,
+ * even when a message is open; a mid-stream authentication or invalid-request
+ * failure must not be continued. Keep the structured type and truncation code
+ * in the diagnostic instead of relying on incidental message text.
  */
 function createAnthropicSseStreamError(data: string, state: { messageOpen: boolean }): Error {
 	const frame = parseAnthropicSseErrorFrame(data);
-	if (state.messageOpen) {
-		const tokens = [frame.type && `type=${frame.type}`, frame.code && `code=${frame.code}`].filter(Boolean).join(" ");
+	if (state.messageOpen && frame.type === "server_error" && frame.code === "upstream_stream_truncated") {
 		return new AIError.AnthropicStreamEnvelopeError(
-			`error frame received before message_stop${tokens ? ` (${tokens})` : ""}: ${frame.message ?? data}`,
+			`error frame received before message_stop (type=${frame.type} code=${frame.code}): ${frame.message ?? data}`,
 		);
 	}
 	if (frame.message) {
