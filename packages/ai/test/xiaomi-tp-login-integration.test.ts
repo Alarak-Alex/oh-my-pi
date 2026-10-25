@@ -112,6 +112,28 @@ describe("loginXiaomi with tp- key", () => {
 		).rejects.toThrow("Xiaomi MiMo API key validation failed (401)");
 	});
 
+	it("surfaces a non-auth SGP failure instead of the later regions' 401 (issue #17045)", async () => {
+		const seen: string[] = [];
+		const fetchMock: FetchImpl = async input => {
+			const url = String(input);
+			seen.push(url);
+			if (url.includes(TOKEN_PLAN_HOSTS.sgp)) {
+				return Response.json({ error: { code: "400", message: "Unsupported model" } }, { status: 400 });
+			}
+			return new Response("Invalid API Key", { status: 401 });
+		};
+
+		await expect(
+			loginXiaomi({
+				onPrompt: async () => TP_KEY,
+				onAuth: () => {},
+				onProgress: () => {},
+				fetch: fetchMock,
+			}),
+		).rejects.toThrow("Xiaomi MiMo API key validation failed (400)");
+		expect(seen).toEqual([`https://${TOKEN_PLAN_HOSTS.sgp}/v1/chat/completions`]);
+	});
+
 	it("falls back through timeouts: SGP timeout → AMS timeout → CN success", async () => {
 		const seen: string[] = [];
 

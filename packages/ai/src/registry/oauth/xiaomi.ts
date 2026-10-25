@@ -42,8 +42,9 @@ async function validateXiaomiApiKey(apiKey: string, signal?: AbortSignal, fetchO
 		// abort the AMS fetch.
 		const timeoutSignal = AbortSignal.timeout(VALIDATION_TIMEOUT_MS);
 		const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+		let response: Response;
 		try {
-			const response = await fetchImpl(`${ep.baseUrl}/chat/completions`, {
+			response = await fetchImpl(`${ep.baseUrl}/chat/completions`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
@@ -56,43 +57,6 @@ async function validateXiaomiApiKey(apiKey: string, signal?: AbortSignal, fetchO
 				}),
 				signal: requestSignal,
 			});
-
-			if (response.ok) {
-				return;
-			}
-
-			// 401 means this endpoint didn't accept the key; try the next one
-			if (response.status === 401) {
-				let details = "";
-				try {
-					details = (await response.text()).trim();
-				} catch {
-					// ignore body parse errors, status is enough
-				}
-				lastError = new AIError.OAuthError(
-					details
-						? `${PROVIDER_NAME} API key validation failed (${response.status}): ${details}`
-						: `${PROVIDER_NAME} API key validation failed (${response.status})`,
-					{ kind: "validation", provider: PROVIDER_ID, status: response.status },
-				);
-				continue;
-			}
-
-			// Non-auth errors are real failures
-			let details = "";
-			try {
-				details = (await response.text()).trim();
-			} catch {
-				// ignore body parse errors, status is enough
-			}
-			const message = details
-				? `${PROVIDER_NAME} API key validation failed (${response.status}): ${details}`
-				: `${PROVIDER_NAME} API key validation failed (${response.status})`;
-			throw new AIError.OAuthError(message, {
-				kind: "validation",
-				provider: PROVIDER_ID,
-				status: response.status,
-			});
 		} catch (e) {
 			// Only re-throw AbortError when the caller explicitly cancelled.
 			// Timeout aborts (from AbortSignal.timeout) should fall through to
@@ -101,7 +65,32 @@ async function validateXiaomiApiKey(apiKey: string, signal?: AbortSignal, fetchO
 				throw e;
 			}
 			lastError = e instanceof Error ? e : new Error(String(e));
+			continue;
 		}
+
+		if (response.ok) {
+			return;
+		}
+
+		let details = "";
+		try {
+			details = (await response.text()).trim();
+		} catch {
+			// ignore body read errors, status is enough
+		}
+		const error = new AIError.OAuthError(
+			details
+				? `${PROVIDER_NAME} API key validation failed (${response.status}): ${details}`
+				: `${PROVIDER_NAME} API key validation failed (${response.status})`,
+			{ kind: "validation", provider: PROVIDER_ID, status: response.status },
+		);
+		// 401 means this endpoint didn't accept the key; try the next one. Any other
+		// status means the endpoint accepted the key but the probe failed, so surface
+		// it instead of letting later regions replace it with their 401.
+		if (response.status !== 401) {
+			throw error;
+		}
+		lastError = error;
 	}
 	throw (
 		lastError ??
