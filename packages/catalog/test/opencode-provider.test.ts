@@ -793,8 +793,8 @@ describe("OpenCode provider discovery", () => {
 		});
 	});
 
-	test("routes live Go Argon to native Gemini with supported thinking levels (#15722)", async () => {
-		const id = "gemini-4-argon-contributor";
+	test("routes live Go Argon to native Gemini with supported thinking levels (#17031)", async () => {
+		const id = "gemini-4-argon";
 		const baseUrl = "https://opencode.ai/inference/go/v1";
 		const descriptor = MODELS_DEV_PROVIDER_DESCRIPTORS.find(item => item.providerId === "opencode-go");
 		expect(descriptor?.resolveApi?.(id, { tool_call: true })).toEqual({ api: "google-generative-ai", baseUrl });
