@@ -365,6 +365,44 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		});
 	});
 
+	it("keeps a fallback provider healthy when a previous provider's limit arrives late", async () => {
+		const codex = getBundledModel("openai-codex", "gpt-6.1-sol");
+		if (!codex) throw new Error("Expected bundled Codex model");
+		const storage = await AuthStorage.create(":memory:", { usageProviderResolver: () => undefined });
+		try {
+			await storage.credentials.set("openai-codex", [
+				{ type: "oauth", access: "codex-exhausted", refresh: "refresh-exhausted", expires: Date.now() + 3_600_000 },
+				{ type: "oauth", access: "codex-healthy", refresh: "refresh-healthy", expires: Date.now() + 3_600_000 },
+			]);
+			await storage.credentials.set("anthropic", [
+				{ type: "api_key", key: "anthropic-healthy-A" },
+				{ type: "api_key", key: "anthropic-healthy-B" },
+			]);
+			const [failed, healthy] = storage.credentials.list("openai-codex");
+			expect(storage.sessions.pin("openai-codex", "test-session", healthy.id)).toBe(true);
+			expect(await storage.keys.get("openai-codex", "test-session")).toBe("codex-healthy");
+			const initialAnthropicKey = await storage.keys.get("anthropic", "test-session");
+
+			const registry = new ModelRegistry(storage, tempDir.join("models.yml"));
+			const recovery = new TurnRecovery(createHost(model, registry));
+			const message = {
+				...makeMessage([], codex),
+				credentialId: failed.id,
+				errorMessage: "You've hit your usage limit. Try again in 9701 min",
+			};
+			await recovery.recordUsageLimitOutcome(message);
+
+			expect(await storage.keys.get("anthropic", "test-session")).toBe(initialAnthropicKey);
+			expect(storage.blocks.list(storage.credentials.list("anthropic").map(credential => credential.id))).toEqual(
+				[],
+			);
+			expect(storage.blocks.list([failed.id])).toHaveLength(1);
+			expect(storage.blocks.list([healthy.id])).toEqual([]);
+		} finally {
+			storage.close();
+		}
+	});
+
 	it("does not replay a long OpenCode Go usage limit after committed text", () => {
 		const openCodeModel = getBundledModel("opencode-go", "deepseek-v4-flash");
 		if (!openCodeModel) throw new Error("Expected bundled OpenCode Go model");

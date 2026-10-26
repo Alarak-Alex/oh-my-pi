@@ -783,25 +783,29 @@ export class TurnRecovery {
 	async recordUsageLimitOutcome(message: AssistantMessage): Promise<boolean> {
 		if (message.stopReason !== "error") return false;
 		const id = this.#classifyRetryMessage(message);
-		const activeModel = this.#host.model();
-		if (!activeModel || !AIError.is(id, AIError.Flag.UsageLimit)) return false;
-
+		if (!AIError.is(id, AIError.Flag.UsageLimit)) return false;
 		let recorded = this.#usageLimitOutcomes.get(message);
 		if (!recorded) {
+			const activeModel = this.#host.model();
+			const failedModel =
+				activeModel?.provider === message.provider && activeModel.id === message.model
+					? activeModel
+					: this.#host.modelRegistry.find(message.provider, message.model);
 			const errorMessage = message.errorMessage || "Unknown error";
 			const parsedRetryAfterMs = this.#parseRetryAfterMsFromError(errorMessage);
 			const retryAfterMs = parsedRetryAfterMs ?? calculateRateLimitBackoffMs(parseRateLimitReason(errorMessage));
 			recorded = (async (): Promise<UsageLimitOutcome> => {
 				const outcome = await this.#host.modelRegistry.authStorage.limits.markReached(
-					activeModel.provider,
+					message.provider,
 					this.#host.sessionId(),
 					{
 						retryAfterMs,
 						// Provider-stated timing only when the error text parsed;
 						// the 30-minute fallback is a guess.
 						providerTimed: parsedRetryAfterMs !== undefined,
-						baseUrl: activeModel.baseUrl,
-						modelId: activeModel.id,
+						baseUrl: failedModel?.baseUrl,
+						modelId: message.model,
+						credentialId: message.credentialId,
 					},
 				);
 				return {

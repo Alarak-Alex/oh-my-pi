@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed a delayed usage-limit error from a previous model blocking a healthy account on the fallback provider ([#17098](https://github.com/can1357/oh-my-pi/issues/17098)).
 - Fixed advisors dropping their review and showing a rate-limit error when the provider returns a timed 429 such as Codex's `turn_rate_limit_exceeded`; the advisor now waits out the Retry-After (within `retry.maxDelayMs`) and retries like the main agent ([#17087](https://github.com/can1357/oh-my-pi/pull/17087) by [@H4vC](https://github.com/H4vC))
 
 ## [18.13.0] - 2026-10-26
