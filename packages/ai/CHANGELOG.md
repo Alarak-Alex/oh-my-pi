@@ -6,6 +6,10 @@
 
 - Updated Bun engine requirement to ≥1.4.4
 
+### Fixed
+
+- Canceling an OAuth refresh while it acquires a credential lease no longer terminates the session with an unhandled rejection.
+
 ## [18.13.2] - 2026-10-27
 
 ### Fixed

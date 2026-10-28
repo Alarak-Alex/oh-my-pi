@@ -1014,6 +1014,49 @@ describe("AuthStorage OAuth refresh race", () => {
 		).resolves.toBeUndefined();
 		expect(refreshCalls).toBe(1);
 	});
+	test("a cancelled OAuth key probe does not leave a fatal refresh rejection", async () => {
+		if (!authStorage || !store) throw new Error("test setup failed");
+		const provider = "unit-oauth-abort-during-lease";
+		oauthUtils.registerOAuthProvider({
+			id: provider,
+			name: provider,
+			sourceId: "auth-storage-oauth-refresh-race-test",
+			async login() {
+				return { access: "unused", refresh: "unused", expires: 0 };
+			},
+			async refreshToken() {
+				throw new Error("cancelled caller must not exchange");
+			},
+			getApiKey(current) {
+				return current.access;
+			},
+		});
+		await authStorage.credentials.set(provider, [
+			{ type: "oauth", access: "old-access", refresh: "old-refresh", expires: 0 },
+		]);
+		const controller = new AbortController();
+		const acquire = store.tryAcquireCredentialRefreshLease?.bind(store);
+		if (!acquire) throw new Error("test store does not support refresh leases");
+		vi.spyOn(store, "tryAcquireCredentialRefreshLease").mockImplementation((id, owner, expiresAt) => {
+			controller.abort();
+			return acquire(id, owner, expiresAt);
+		});
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			await expect(
+				authStorage.keys.get(provider, "cancelled-session", { signal: controller.signal }),
+			).resolves.toBeUndefined();
+			const turn = Promise.withResolvers<void>();
+			setImmediate(turn.resolve);
+			await turn.promise;
+			expect(unhandled).toEqual([]);
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+
 	test("persists a rotated token when the requesting usage call is canceled", async () => {
 		if (!authStorage || !store) throw new Error("test setup failed");
 		const started = Promise.withResolvers<void>();

@@ -7,7 +7,11 @@ import * as AIError from "../error";
  */
 export function raceSignal<T>(promise: Promise<T>, signal: AbortSignal | undefined, message: string): Promise<T> {
 	if (!signal) return promise;
-	if (signal.aborted) return Promise.reject(new AIError.AbortError(message));
+	if (signal.aborted) {
+		// The operation may still reject after its caller leaves; keep observing it.
+		void promise.catch(() => {});
+		return Promise.reject(new AIError.AbortError(message));
+	}
 	const abort = Promise.withResolvers<never>();
 	const onAbort = (): void => abort.reject(new AIError.AbortError(message));
 	signal.addEventListener("abort", onAbort, { once: true });
