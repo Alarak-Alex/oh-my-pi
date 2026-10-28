@@ -44,6 +44,9 @@ pub struct TargetTraits<'a> {
 	/// Another window shows at the pointer event's screen point instead of the
 	/// target (`WindowFromPoint`); false for keys and window-level checks.
 	pub covered:             bool,
+	/// UI Automation identifies this control as a radio button. WinForms can
+	/// select an unfocused radio on mouse-down even when mouse-up is covered.
+	pub radio_button:        bool,
 }
 
 pub fn is_chromium_class(class: &str) -> bool {
@@ -108,6 +111,11 @@ fn winforms_base_class(class: &str) -> Option<&str> {
 	(!base.is_empty() && !hash.is_empty()).then_some(base)
 }
 
+/// Whether `class` is a WinForms Button, CheckBox or RadioButton HWND.
+pub fn is_winforms_button_class(class: &str) -> bool {
+	winforms_base_class(class).is_some_and(|base| base.eq_ignore_ascii_case("BUTTON"))
+}
+
 /// Whether UI Automation actions on a top-level window of `class` can bring
 /// it to the foreground: Chromium and WPF providers activate their window,
 /// and so do WinForms controls for `Invoke`, `Toggle` and `SetValue`.
@@ -159,15 +167,15 @@ pub fn would_be_silently_dropped(
 	if is_vcl_class(class) && matches!(kind, Keystroke | KeyCombo) {
 		return Some("VCL accelerators require real key state from the system input queue");
 	}
-	// WinForms `ButtonBase` clicks on a left-button release only when
-	// `WindowFromPoint` at the release point is the button itself.
-	if winforms_base_class(class).is_some_and(|base| base.eq_ignore_ascii_case("BUTTON"))
+	// RadioButton can act on focus on mouse-down even when the release point
+	// is covered; Button and CheckBox depend on the release hit test.
+	if is_winforms_button_class(class)
 		&& target.covered
+		&& !target.radio_button
 		&& matches!(kind, MouseClick)
 	{
 		return Some(
-			"WinForms buttons, check boxes and radio buttons ignore a click where another window \
-			 covers them",
+			"WinForms buttons and check boxes ignore a click where another window covers them",
 		);
 	}
 	if is_terminal_class(class) && !target.foreground && matches!(kind, TextInput) {
@@ -296,6 +304,7 @@ mod tests {
 			foreground: false,
 			xaml_host: false,
 			covered: false,
+			radio_button: false,
 		}
 	}
 
@@ -337,6 +346,11 @@ mod tests {
 			assert_matrix(covered(class), [true, false, false, false, false, false]);
 			assert_matrix(background(class), [false; 6]);
 		}
+		let radio = TargetTraits {
+			radio_button: true,
+			..covered("WindowsForms10.BUTTON.app.0.141b42a_r8_ad1")
+		};
+		assert_matrix(radio, [false; 6]);
 		// Forms and text boxes keep posted clicks (caret placement) and keys.
 		assert_matrix(covered("WindowsForms10.Window.8.app.0.141b42a_r8_ad1"), [false; 6]);
 		assert_matrix(covered("WindowsForms10.EDIT.app.0.141b42a_r8_ad1"), [false; 6]);
