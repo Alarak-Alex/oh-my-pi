@@ -223,6 +223,8 @@ export interface InteractiveModeContext {
 	typeLinkHint(letter: string): void;
 	/** Leave link-hint mode without activating a link. */
 	cancelLinkHints(): void;
+	/** Activate a classic control at zero-based mutable-viewport cell coordinates. */
+	handleViewportClick(column: number, row: number): boolean;
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
 	/** Point the inline hover band at a click-candidate id (or clear it). */

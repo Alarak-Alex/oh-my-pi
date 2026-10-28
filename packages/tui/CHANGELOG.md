@@ -27,6 +27,9 @@
 ### Fixed
 
 - Fixed the LSP diagnostics view showing "No issues" for files whose language server had not reported yet; they now show as unverified ([#17293](https://github.com/can1357/oh-my-pi/pull/17293) by [@JustasMasiulis](https://github.com/JustasMasiulis))
+### Added
+
+- Markdown tables offer per-table TSV, CSV, and Markdown copy controls in Tern and the live classic-terminal viewport; the `/copy` picker also lists each table and format.
 
 ## [18.13.3] - 2026-10-28
 

@@ -155,6 +155,8 @@ export interface ViewportClickSpan {
 	end: number;
 	/** Candidate subagent ids for a span-local row. */
 	candidates: (local: number) => string[];
+	/** Local cell action, separate from whole-row agent focus. */
+	click?: (column: number, row: number) => boolean;
 }
 
 /**
@@ -304,6 +306,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#lastClickSpans: ViewportClickSpan[] = [];
 	/** Rows of the last `renderFrame` viewport, before the hover band; read to hit-test extension links. */
 	#lastViewportRows: readonly string[] = [];
+	#lastClickSize: ViewportSize | undefined;
 	/** Click-candidate id under the pointer, painted with the hover band. Id-anchored so it follows streaming rows. */
 	#hoveredClickId: string | undefined;
 	/**
@@ -444,6 +447,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
+		this.#lastClickSize = viewport;
 		if (this.#resizeRetiredHeaderStart !== undefined) {
 			this.#retiredHeaderStart = this.#resizeRetiredHeaderStart;
 			this.#resizeRetiredHeaderStart = undefined;
@@ -511,9 +515,22 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
 		const activeSpans: ViewportClickSpan[] = [];
 		for (const span of transcript.getLastViewportSpans()) {
-			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.();
-			if (!ids || ids.length === 0) continue;
-			activeSpans.push({ start: span.start, end: span.end, candidates: () => ids });
+			const ids = (span.component as Partial<{ getClickFocusAgentIds(): string[] }>).getClickFocusAgentIds?.() ?? [];
+			const click = span.rowOffset === undefined ? undefined : span.component.getInlineClickHandler?.(width);
+			if (ids.length === 0 && click === undefined) continue;
+			const rowOffset = span.rowOffset ?? 0;
+			activeSpans.push({
+				start: span.start,
+				end: span.end,
+				candidates: () => ids,
+				click:
+					click === undefined
+						? undefined
+						: (column, row) =>
+								this.#runtimeChildren.includes(transcript) &&
+								transcript.children.includes(span.component) &&
+								click(column, row + rowOffset),
+			});
 		}
 		const drop = Math.max(0, before.length + active.length + after.length - rows);
 		const mutable = [...before, ...active, ...after].slice(drop);
@@ -560,7 +577,12 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 				// A clipped head must offset the callback: without the skew the
 				// first visible row would hit-test as span-local row 0.
 				const skew = clamped - start;
-				spans.push({ start: clamped, end, candidates: (local: number) => span.candidates(local + skew) });
+				spans.push({
+					start: clamped,
+					end,
+					candidates: (local: number) => span.candidates(local + skew),
+					click: span.click === undefined ? undefined : (column, row) => span.click!(column, row + skew),
+				});
 			}
 		};
 		for (const span of activeSpans) shift(span, before.length - drop);
@@ -771,6 +793,26 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 */
 	viewportClickCandidates(index: number): string[] {
 		return routeViewportClick(this.#lastClickSpans, index);
+	}
+
+	/** Dispatch a classic control only within the current live viewport and terminal size. */
+	handleViewportClick(column: number, row: number): boolean {
+		if (
+			!this.#started ||
+			this.#stopped ||
+			this.#lastClickSize?.columns !== this.ui.terminal.columns ||
+			this.#lastClickSize.rows !== this.ui.terminal.rows ||
+			!Number.isInteger(column) ||
+			column < 0 ||
+			column >= this.#lastClickSize.columns ||
+			!Number.isInteger(row) ||
+			row < 0
+		)
+			return false;
+		for (const span of this.#lastClickSpans) {
+			if (row >= span.start && row < span.end) return span.click?.(column, row - span.start) ?? false;
+		}
+		return false;
 	}
 
 	/**

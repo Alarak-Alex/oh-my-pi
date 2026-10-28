@@ -15,17 +15,20 @@ const ESC = String.fromCharCode(27);
 // candidates below resolve it to the toggle sentinel.
 const EXPANDER_CLICK = `${ESC}[<0;5;3M`;
 
-function makeHarness() {
+function makeHarness(
+	options: { handled?: boolean; viewportTop?: number; viewportLength?: number; overlay?: boolean } = {},
+) {
 	const listeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const focused: string[] = [];
+	const controls: { column: number; row: number }[] = [];
 	let toggled = 0;
 	const ctx = {
 		ui: {
 			addInputListener: (fn: (data: string) => { consume?: boolean; data?: string } | undefined) => {
 				listeners.push(fn);
 			},
-			getMutableViewport: () => ({ top: 0, length: 5 }),
-			hasOverlay: () => false,
+			getMutableViewport: () => ({ top: options.viewportTop ?? 0, length: options.viewportLength ?? 5 }),
+			hasOverlay: () => options.overlay ?? false,
 			requestRender: () => {},
 			addStartListener: () => {},
 			getFocused: () => undefined,
@@ -46,6 +49,10 @@ function makeHarness() {
 		},
 		resolveViewportClickCandidates: (index: number) => (index === 2 ? [PINNED_HUD_TOGGLE_ID] : []),
 		activateViewportLink: () => false,
+		handleViewportClick: (column: number, row: number) => {
+			controls.push({ column, row });
+			return options.handled ?? false;
+		},
 		focusedAgentId: undefined,
 		focusAgentSession: async (id: string) => {
 			focused.push(id);
@@ -59,10 +66,9 @@ function makeHarness() {
 	const controller = new InputController(ctx);
 	controller.setupKeyHandlers();
 	return {
-		click: () => {
-			for (const listener of listeners) listener(EXPANDER_CLICK);
-		},
+		click: (data = EXPANDER_CLICK) => listeners.map(listener => listener(data)),
 		focused,
+		controls,
 		toggled: () => toggled,
 	};
 }
@@ -98,5 +104,45 @@ describe("InputController click routing", () => {
 		h.click();
 		expect(h.toggled()).toBe(1);
 		expect(h.focused).toEqual([]);
+	});
+
+	it("routes local cell coordinates to controls before whole-row agent focus", () => {
+		const h = makeHarness({ handled: true, viewportTop: 1 });
+		h.click();
+		expect(h.controls).toEqual([{ column: 4, row: 1 }]);
+		expect(h.toggled()).toBe(0);
+		expect(h.focused).toEqual([]);
+	});
+
+	it("preserves row focus when a control declines the click", () => {
+		const h = makeHarness();
+		h.click();
+		expect(h.controls).toEqual([{ column: 4, row: 2 }]);
+		expect(h.toggled()).toBe(1);
+	});
+
+	it("does not dispatch outside the published viewport or during a resize transaction", () => {
+		for (const options of [{ viewportLength: 0 }, { viewportTop: 4 }, { viewportLength: 2 }]) {
+			const h = makeHarness({ ...options, handled: true });
+			h.click();
+			expect(h.controls).toEqual([]);
+			expect(h.toggled()).toBe(0);
+		}
+	});
+
+	it("leaves mouse-off input and overlay-owned clicks alone", () => {
+		const overlay = makeHarness({ handled: true, overlay: true });
+		overlay.click();
+		expect(overlay.controls).toEqual([]);
+		cfgTuiMouse.set(settings, false);
+		const off = makeHarness({ handled: true });
+		expect(off.click().every(result => result?.consume !== true)).toBe(true);
+		expect(off.controls).toEqual([]);
+	});
+
+	it("does not activate controls on pointer motion, release, or wheel reports", () => {
+		const h = makeHarness({ handled: true });
+		for (const data of [`${ESC}[<35;5;3M`, `${ESC}[<0;5;3m`, `${ESC}[<64;5;3M`]) h.click(data);
+		expect(h.controls).toEqual([]);
 	});
 });

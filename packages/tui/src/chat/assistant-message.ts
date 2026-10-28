@@ -868,6 +868,13 @@ export class AssistantMessageComponent extends Container {
 		return rows;
 	}
 
+	getInlineClickHandler(width: number): ((column: number, row: number) => boolean) | undefined {
+		const click = this.getChildInlineClickHandler(width);
+		if (click === undefined) return undefined;
+		const version = this.#blockVersion;
+		return (column, row) => this.#blockVersion === version && click(column, row);
+	}
+
 	/**
 	 * A `col` (role `omp.assistant`) of `md` nodes keyed by content index, so
 	 * streamed deltas reach the terminal as `text append` on the same node;

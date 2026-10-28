@@ -1182,6 +1182,30 @@ const RENDER_CACHE_MAX_SIZE = 4 * 1024 * 1024;
 const RENDER_CACHE_MAX_ENTRY_SIZE = 512 * 1024;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 
+// Cache-only metadata: a process nonce prevents model text from forging controls; render() strips every marker.
+const TABLE_COPY_MARKER = `\x1b]omp-table-${crypto.randomUUID()};`;
+const TABLE_COPY_MARKER_PATTERN = new RegExp(
+	`${TABLE_COPY_MARKER.replaceAll("[", "\\[").replaceAll("]", "\\]")}([a-z0-9]*);(tsv|csv|markdown)?\x07`,
+	"g",
+);
+
+interface InlineTableRegion {
+	row: number;
+	from: number;
+	to: number;
+	id: string;
+	format: TableCopyFormat;
+}
+
+interface InlineTableFrame {
+	source: string;
+	width: number;
+	rawRows: readonly string[];
+	rows: readonly string[];
+	regions: InlineTableRegion[];
+	click?: (column: number, row: number) => boolean;
+}
+
 interface RenderedLine {
 	text: string;
 	literalCode?: true;
@@ -2170,6 +2194,7 @@ interface RenderSignature {
 	headingProbe: string;
 	/** Fallback glyphs for themes without `symbols`; their identity alone cannot tell presets apart. */
 	symbolsProbe: string;
+	tableCopy: boolean;
 }
 
 /** A shorter prefix the cached rows grew from: its length, its token count and the row count its rows end at. */
@@ -2417,6 +2442,8 @@ export class Markdown implements Component {
 	#ignoreTight = false;
 	#native?: { text: string; stream: boolean; actions: boolean; node: NativeNode };
 	#tableCopyActions?: Map<string, { table: Tokens.Table; format: TableCopyFormat }>;
+	#inlineTableFrame?: InlineTableFrame;
+	#renderTableCopy = false;
 	setIgnoreTight(ignore: boolean): this {
 		this.#ignoreTight = ignore;
 		this.invalidate();
@@ -2520,6 +2547,7 @@ export class Markdown implements Component {
 		this.#cachedText = undefined;
 		this.#cachedWidth = undefined;
 		this.#cachedLines = undefined;
+		this.#inlineTableFrame = undefined;
 	}
 
 	releaseRenderCaches(): void {
@@ -3041,6 +3069,77 @@ export class Markdown implements Component {
 	}
 
 	render(width: number): readonly string[] {
+		const tableCopy = hasTranscriptActions();
+		if (this.#renderTableCopy !== tableCopy) {
+			this.#renderTableCopy = tableCopy;
+			this.releaseRenderCaches();
+		}
+		const rawRows = this.#renderRows(width);
+		const previous = this.#inlineTableFrame;
+		if (previous?.rawRows === rawRows && previous.source === this.#text && previous.width === width) {
+			return previous.rows;
+		}
+		this.#inlineTableFrame = undefined;
+		if (!tableCopy || !rawRows.some(line => line.includes(TABLE_COPY_MARKER))) return rawRows;
+		const rows: string[] = [];
+		const regions: InlineTableRegion[] = [];
+		for (const [row, raw] of rawRows.entries()) {
+			let line = "";
+			let cursor = 0;
+			let active: { id: string; format: TableCopyFormat; from: number } | undefined;
+			TABLE_COPY_MARKER_PATTERN.lastIndex = 0;
+			for (let match = TABLE_COPY_MARKER_PATTERN.exec(raw); match; match = TABLE_COPY_MARKER_PATTERN.exec(raw)) {
+				line += raw.slice(cursor, match.index);
+				if (active) {
+					regions.push({ ...active, row, to: visibleWidth(line) });
+					active = undefined;
+				}
+				const format = match[2];
+				if (match[1] && (format === "tsv" || format === "csv" || format === "markdown")) {
+					active = { id: match[1], format, from: visibleWidth(line) };
+				}
+				cursor = match.index + match[0].length;
+			}
+			rows.push(line + raw.slice(cursor));
+		}
+		this.#inlineTableFrame = { source: this.#text, width, rawRows, rows, regions };
+		return rows;
+	}
+
+	/** A snapshot of the last painted table controls; never redirects stale cell coordinates after a redraw. */
+	getInlineClickHandler(width: number): ((column: number, row: number) => boolean) | undefined {
+		const frame = this.#inlineTableFrame;
+		if (!frame || frame.width !== width || frame.source !== this.#text || !hasTranscriptActions()) return undefined;
+		if (frame.click) return frame.click;
+		const tabbed = this.#text.includes("\t") ? replaceTabs(this.#text) : this.#text;
+		const tokens = lexDocument(this.#transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed));
+		const original = tablesInBlocks(tokens);
+		const tail = tokens.at(-1);
+		const speculated = this.#transientRenderCache && tail ? speculateStreamingToken(tail) : undefined;
+		const rendered = speculated ? tablesInBlocks([...tokens.slice(0, -1), speculated]) : original;
+		const tables = new Map<string, Tokens.Table>();
+		for (const [index, table] of rendered.entries()) {
+			const source = original[index];
+			if (source) tables.set(stableKey(table.raw), source);
+		}
+		frame.click = (column, row): boolean => {
+			if (
+				this.#inlineTableFrame !== frame ||
+				!hasTranscriptActions() ||
+				!Number.isInteger(column) ||
+				!Number.isInteger(row)
+			)
+				return false;
+			const region = frame.regions.find(region => region.row === row && column >= region.from && column < region.to);
+			const table = region && tables.get(region.id);
+			return table && region
+				? runTranscriptAction({ act: "copy", text: formatTableForClipboard(table, region.format) })
+				: false;
+		};
+		return frame.click;
+	}
+
+	#renderRows(width: number): readonly string[] {
 		// L1: per-instance cache — fastest path for repeated renders of the same
 		// instance at the same width (e.g. resize debounce, repeated redraws).
 		// Returning the cached reference is load-bearing: parents memoize their
@@ -3347,6 +3446,7 @@ export class Markdown implements Component {
 			bgColorProbe,
 			headingProbe,
 			symbolsProbe: this.#symbolsProbe,
+			tableCopy: this.#renderTableCopy,
 		};
 	}
 	// All-primitive signature — compare via the canonical render-cache encoding.
@@ -3355,7 +3455,7 @@ export class Markdown implements Component {
 	}
 
 	#renderCacheKey(normalizedText: string, signature: RenderSignature): string {
-		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.extensionLinks}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.symbolsProbe}`;
+		return `${normalizedText}\x00${signature.width}\x00${signature.paddingX}\x00${signature.paddingY}\x00${signature.codeBlockIndent}\x00${signature.themeId}\x00${signature.defaultTextStyleId}\x00${signature.imageProtocol}\x00${signature.hyperlinks ? 1 : 0}\x00${signature.extensionLinks}\x00${signature.textSizing ? 1 : 0}\x00${signature.bgColorProbe}\x00${signature.headingProbe}\x00${signature.symbolsProbe}\x00${signature.tableCopy ? 1 : 0}`;
 	}
 
 	#renderStreamingContentLines(
@@ -4721,6 +4821,7 @@ export class Markdown implements Component {
 		if (availableForCells < numCols) {
 			// Too narrow to render a stable table. Fall back to raw markdown.
 			const fallbackLines = token.raw ? wrapTextWithAnsi(token.raw, availableWidth) : [];
+			fallbackLines.push(...this.#tableCopyFooter(token.raw, availableWidth));
 			if (nextTokenType && nextTokenType !== "space") {
 				fallbackLines.push("");
 			}
@@ -4917,9 +5018,37 @@ export class Markdown implements Component {
 		const bottomBorderCells = columnWidths.map(w => h.repeat(w));
 		const bottomBorder = `${t.bottomLeft}${h}${bottomBorderCells.join(`${h}${t.teeUp}${h}`)}${h}${t.bottomRight}`;
 		lines.push(bottomBorder);
+		lines.push(...this.#tableCopyFooter(token.raw, availableWidth));
 		if (nextTokenType && nextTokenType !== "space") {
 			lines.push(""); // Add spacing after table
 		}
+		return lines;
+	}
+
+	#tableCopyFooter(raw: string | undefined, width: number): string[] {
+		if (!this.#renderTableCopy || !raw) return [];
+		const id = stableKey(raw);
+		const lines: string[] = [];
+		let line = "";
+		let used = 0;
+		for (const format of ["tsv", "csv", "markdown"] as const) {
+			const name = format === "markdown" ? "Markdown" : format.toUpperCase();
+			const full = `[Copy ${name}]`;
+			const label = truncateToWidth(visibleWidth(full) <= width ? full : `[${name}]`, width, Ellipsis.Omit);
+			const size = visibleWidth(label);
+			if (used > 0 && used + 1 + size > width) {
+				lines.push(line);
+				line = "";
+				used = 0;
+			}
+			if (used > 0) {
+				line += " ";
+				used++;
+			}
+			line += `${TABLE_COPY_MARKER}${id};${format}\x07${this.#theme.link(label)}${TABLE_COPY_MARKER};\x07`;
+			used += size;
+		}
+		if (line) lines.push(line);
 		return lines;
 	}
 }

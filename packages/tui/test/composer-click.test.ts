@@ -1,10 +1,13 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { Container, type Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 import { routeViewportClick, type ViewportClickSpan } from "@oh-my-pi/pi-tui/prompt/composer";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { setTranscriptActionHandler, type TranscriptAction } from "@oh-my-pi/pi-tui/chat/transcript-actions";
 
 function span(start: number, end: number, ids: string[]): ViewportClickSpan {
 	return { start, end, candidates: () => ids };
@@ -215,6 +218,145 @@ describe("composer chrome span recording", () => {
 			expect(hudRow).toBeGreaterThanOrEqual(0);
 			expect(composer.viewportClickCandidates(hudRow)).toEqual(["AgentH"]);
 			expect(first.renders).toBe(1);
+		} finally {
+			composer.stop();
+		}
+	});
+});
+
+function tableMessage(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "test-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: 0,
+	};
+}
+
+function tableButton(rows: readonly string[], format: string, table = 0): { column: number; row: number } {
+	const label = `[Copy ${format}]`;
+	const matches: { column: number; row: number }[] = [];
+	for (let row = 0; row < rows.length; row++) {
+		const plain = Bun.stripANSI(rows[row]!);
+		const index = plain.indexOf(label);
+		if (index !== -1) matches.push({ column: Bun.stringWidth(plain.slice(0, index)) + 1, row });
+	}
+	expect(matches.length).toBeGreaterThan(table);
+	return matches[table]!;
+}
+
+describe("composer classic table controls", () => {
+	beforeAll(() => {
+		initTheme();
+	});
+	afterEach(() => {
+		setTranscriptActionHandler(undefined);
+	});
+
+	const firstTable = "| Name | Value |\n| --- | --- |\n| first | alpha |";
+	const secondTable = "| Name | Value |\n| --- | --- |\n| second | beta |";
+
+	it("copies each format from its own rendered assistant table, without acting during render", () => {
+		const term = new VirtualTerminal(80, 40);
+		const composer = new Composer({ terminal: term, preferences: { quiet: true } });
+		const actions: TranscriptAction[] = [];
+		setTranscriptActionHandler(action => actions.push(action));
+		composer.start();
+		try {
+			const transcript = new TranscriptContainer();
+			const assistant = new AssistantMessageComponent();
+			assistant.updateContent(tableMessage(`Before\n\n${firstTable}\n\nBetween\n\n${secondTable}`));
+			transcript.addChild(assistant);
+			composer.setRuntimeChildren([transcript]);
+			const frame = composer.renderFrame({ columns: 80, rows: 40 });
+			expect(actions).toEqual([]);
+			for (const [table, value] of ["first\talpha", "second\tbeta"].entries()) {
+				for (const format of ["TSV", "CSV", "Markdown"]) {
+					const point = tableButton(frame.viewport, format, table);
+					expect(composer.handleViewportClick(point.column, point.row)).toBe(true);
+					expect(actions.at(-1)).toEqual({
+						act: "copy",
+						text:
+							format === "TSV"
+								? `Name\tValue\n${value}`
+								: format === "CSV"
+									? `Name,Value\n${value.replace("\t", ",")}`
+									: table === 0
+										? firstTable
+										: secondTable,
+					});
+				}
+			}
+			expect(actions).toHaveLength(6);
+			expect(
+				composer.handleViewportClick(
+					0,
+					frame.viewport.findIndex(row => row.includes("Before")),
+				),
+			).toBe(false);
+			expect(actions).toHaveLength(6);
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("maps a clipped table tail to its actual controls, not the block's old first rows", () => {
+		const term = new VirtualTerminal(80, 5);
+		const composer = new Composer({ terminal: term, preferences: { quiet: true } });
+		const actions: TranscriptAction[] = [];
+		setTranscriptActionHandler(action => actions.push(action));
+		composer.start();
+		try {
+			const transcript = new TranscriptContainer();
+			const assistant = new AssistantMessageComponent();
+			assistant.updateContent(tableMessage(`Long introduction\n\n${firstTable}\n\n${secondTable}`));
+			transcript.addChild(assistant);
+			composer.setRuntimeChildren([transcript]);
+			const frame = composer.renderFrame({ columns: 80, rows: 5 });
+			const point = tableButton(frame.viewport, "TSV");
+			expect(composer.handleViewportClick(point.column, point.row)).toBe(true);
+			expect(actions).toEqual([{ act: "copy", text: "Name\tValue\nsecond\tbeta" }]);
+		} finally {
+			composer.stop();
+		}
+	});
+
+	it("declines stale controls after a source update, resize, or transcript removal", () => {
+		const term = new VirtualTerminal(80, 24);
+		const composer = new Composer({ terminal: term, preferences: { quiet: true } });
+		const actions: TranscriptAction[] = [];
+		setTranscriptActionHandler(action => actions.push(action));
+		composer.start();
+		try {
+			const transcript = new TranscriptContainer();
+			const assistant = new AssistantMessageComponent();
+			assistant.updateContent(tableMessage(firstTable));
+			transcript.addChild(assistant);
+			composer.setRuntimeChildren([transcript]);
+			let frame = composer.renderFrame({ columns: 80, rows: 24 });
+			let point = tableButton(frame.viewport, "TSV");
+			assistant.updateContent(tableMessage(secondTable));
+			expect(composer.handleViewportClick(point.column, point.row)).toBe(false);
+			frame = composer.renderFrame({ columns: 80, rows: 24 });
+			point = tableButton(frame.viewport, "TSV");
+			term.resize(60, 24);
+			expect(composer.handleViewportClick(point.column, point.row)).toBe(false);
+			frame = composer.renderFrame({ columns: 60, rows: 24 });
+			point = tableButton(frame.viewport, "TSV");
+			transcript.clear();
+			expect(composer.handleViewportClick(point.column, point.row)).toBe(false);
+			expect(actions).toEqual([]);
 		} finally {
 			composer.stop();
 		}

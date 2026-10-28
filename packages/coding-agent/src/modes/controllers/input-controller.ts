@@ -830,11 +830,12 @@ export class InputController {
 	}
 
 	/**
-	 * Inline click-to-focus (`tui.mouse`): left-clicks on live subagent cards
-	 * and HUD rows focus that agent in one action, and pointer motion lights up
-	 * the hover band on the target under the cursor. Every SGR report is consumed
-	 * while inline tracking owns the terminal so button/wheel bytes never reach
-	 * the editor as typed input; clicks on chrome simply swallow.
+	 * Inline controls, extension links, and click-to-focus (`tui.mouse`): table
+	 * buttons act first, then extension-owned links; other left-clicks on live
+	 * subagent cards and HUD rows focus that agent. Pointer motion paints its
+	 * hover band. Every SGR report is consumed while inline tracking owns the
+	 * terminal so button/wheel bytes never reach the editor as typed input;
+	 * clicks on chrome simply swallow.
 	 */
 	#handleInlineMouse(data: string): { consume?: boolean; data?: string } | undefined {
 		if (!data.startsWith("\x1b[<")) return undefined;
@@ -843,10 +844,16 @@ export class InputController {
 		const event = parseSgrMouse(data);
 		if (!event) return undefined;
 		if (event.motion) this.#updateHoverHighlight(event.row);
-		else if (event.leftClick && !this.#activateClickedLink(event.row, event.col)) this.#focusClickedAgent(event.row);
+		else if (event.leftClick) {
+			const viewport = this.ctx.ui.getMutableViewport();
+			const local = event.row - viewport.top;
+			if (local >= 0 && local < viewport.length && this.ctx.handleViewportClick(event.col, local)) {
+				return { consume: true };
+			}
+			if (!this.#activateClickedLink(event.row, event.col)) this.#focusClickedAgent(event.row);
+		}
 		return { consume: true };
 	}
-
 	/**
 	 * Keyboard link picking. `app.links.hint` enters link-hint mode, which then owns the keyboard
 	 * while the editor has focus: a lowercase letter narrows the tags, and any other key cancels and

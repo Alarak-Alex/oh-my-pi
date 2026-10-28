@@ -1201,8 +1201,8 @@ describe("TranscriptContainer viewport click spans", () => {
 
 		expect(transcript.renderViewport(80, 10, frame)).toEqual(["a1", "a2", "", "b1"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
-			{ component: first, start: 0, end: 2 },
-			{ component: second, start: 3, end: 4 },
+			{ component: first, start: 0, end: 2, rowOffset: 0 },
+			{ component: second, start: 3, end: 4, rowOffset: 0 },
 		]);
 	});
 
@@ -1215,9 +1215,28 @@ describe("TranscriptContainer viewport click spans", () => {
 
 		expect(transcript.renderViewport(80, 5, frame)).toEqual(["a4", "b1", "b2", "b3", "b4"]);
 		expect(transcript.getLastViewportSpans()).toEqual([
-			{ component: first, start: 0, end: 1 },
-			{ component: second, start: 1, end: 5 },
+			{ component: first, start: 0, end: 1, rowOffset: 3 },
+			{ component: second, start: 1, end: 5, rowOffset: 0 },
 		]);
+	});
+
+	it("keeps component coordinates through blank trimming and head clipping", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(["", "  ", "first", "second", "third", ""], false);
+		transcript.addChild(block);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["second", "third"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: block, start: 0, end: 2, rowOffset: 3 }]);
+	});
+
+	it("keeps component coordinates after stable rows leave the live viewport", () => {
+		const transcript = new TranscriptContainer();
+		const block = new AppendBlock(["", "stable", "control"], ["stable"]);
+		transcript.addChild(block);
+		const batch = transcript.peekFinalizedBatch(80, 1)!;
+		expect(batch.rows).toEqual(["stable"]);
+		transcript.acknowledgeFinalizedBatch(batch.id);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["control"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: block, start: 0, end: 1, rowOffset: 2 }]);
 	});
 
 	it("leaves the emergency summary row unmapped", () => {

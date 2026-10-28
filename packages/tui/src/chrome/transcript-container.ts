@@ -256,6 +256,8 @@ export interface TranscriptViewportSpan {
 	component: Component;
 	start: number;
 	end: number;
+	/** Full component-render row at `start`; absent for synthetic emergency summaries. */
+	rowOffset?: number;
 }
 
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
@@ -292,6 +294,7 @@ export class TranscriptContainer extends Container {
 	#frameRows = new Map<TranscriptEntry, MeasuredBlock>();
 	#frameRowsWidth = 0;
 	#releaseFailures = new WeakSet<Component>();
+	#renderedRowOffsets = new WeakMap<Component, number>();
 	/** The `children` array `#entries` last mirrored; see {@link #syncEntries}. */
 	#syncedChildren: Component[] | undefined;
 	/** Forces the next {@link #syncEntries} to compare every entry, not just the live tail. */
@@ -571,7 +574,12 @@ export class TranscriptContainer extends Container {
 	}
 
 	/** Collapse a per-line owner list into run-length block spans, clamped to `length`. */
-	#commitViewportSpans(owners: readonly (Component | undefined)[], length: number = owners.length): void {
+	#commitViewportSpans(
+		owners: readonly (Component | undefined)[],
+		length: number = owners.length,
+		rowOffsets?: ReadonlyMap<Component, number>,
+		drop = 0,
+	): void {
 		const spans: TranscriptViewportSpan[] = [];
 		let index = 0;
 		while (index < length) {
@@ -582,7 +590,13 @@ export class TranscriptContainer extends Container {
 			}
 			let end = index + 1;
 			while (end < length && owners[end] === component) end++;
-			spans.push({ component, start: index, end });
+			const offset = rowOffsets?.get(component);
+			spans.push({
+				component,
+				start: index,
+				end,
+				rowOffset: offset === undefined ? undefined : offset + index + drop,
+			});
 			index = end;
 		}
 		this.#lastViewportSpans = spans;
@@ -661,18 +675,26 @@ export class TranscriptContainer extends Container {
 		if (total <= capacity) {
 			const output: string[] = [];
 			const owners: (Component | undefined)[] = [];
+			const rowOffsets = new Map<Component, number>();
 			for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
 				if (output.length > 0) {
 					output.push("");
 					owners.push(undefined);
 				}
 				const component = shown[blockIndex]!.entry.component;
+				const { entry, index } = shown[blockIndex]!;
+				rowOffsets.set(
+					component,
+					(this.#renderedRowOffsets.get(component) ?? 0) +
+						this.#projectedEmittedRowCount(entry, index, width) -
+						output.length,
+				);
 				for (const line of blocks[blockIndex]!) {
 					output.push(line);
 					owners.push(component);
 				}
 			}
-			this.#commitViewportSpans(owners, output.length);
+			this.#commitViewportSpans(owners, output.length, rowOffsets);
 			return output;
 		}
 
@@ -697,21 +719,30 @@ export class TranscriptContainer extends Container {
 		}
 		const output: string[] = [];
 		const owners: (Component | undefined)[] = [];
+		const rowOffsets = new Map<Component, number>();
 		for (let index = 0; index < shown.length; index++) {
 			const candidate = shown[index]!;
 			const allocated = allocation[index]!;
 			this.#setAllocation(candidate.entry.component, allocated, frame);
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
-			);
+			const full = this.#renderEntry(candidate.entry, width);
+			const emitted = this.#projectedEmittedRowCount(candidate.entry, candidate.index, width);
+			const rendered = full.slice(emitted);
 			const visible = rendered.length <= allocated ? rendered : rendered.slice(rendered.length - allocated);
+			rowOffsets.set(
+				candidate.entry.component,
+				(this.#renderedRowOffsets.get(candidate.entry.component) ?? 0) +
+					emitted +
+					rendered.length -
+					visible.length -
+					output.length,
+			);
 			for (const line of visible) {
 				output.push(line);
 				owners.push(candidate.entry.component);
 			}
 		}
 		const drop = Math.max(0, output.length - capacity);
-		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
+		this.#commitViewportSpans(owners.slice(drop), output.length - drop, rowOffsets, drop);
 		return drop > 0 ? output.slice(drop) : output;
 	}
 
@@ -1060,7 +1091,11 @@ export class TranscriptContainer extends Container {
 	}
 
 	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
-		const rendered = trimBlankEdges(entry.component.render(width));
+		const full = entry.component.render(width);
+		const rendered = trimBlankEdges(full);
+		let offset = 0;
+		if (rendered !== full) while (offset < full.length && isPlainBlank(full[offset]!)) offset++;
+		this.#renderedRowOffsets.set(entry.component, offset);
 		if (entry.state === "committed" || entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
@@ -1499,6 +1534,7 @@ export class TranscriptContainer extends Container {
 
 		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
 		const owners: (Component | undefined)[] = hiddenActive > 0 ? [undefined] : [];
+		const rowOffsets = new Map<Component, number>();
 		for (const candidate of visible) {
 			if (candidate === emergencyCandidate) {
 				output.push(emergencyRow ?? "");
@@ -1514,14 +1550,18 @@ export class TranscriptContainer extends Container {
 				owners.push(candidate.entry.component);
 				continue;
 			}
-			const rendered = this.#renderEntry(candidate.entry, width).slice(
-				this.#projectedEmittedRowCount(candidate.entry, candidate.index, width),
+			const full = this.#renderEntry(candidate.entry, width);
+			const emitted = this.#projectedEmittedRowCount(candidate.entry, candidate.index, width);
+			const rendered = full.slice(emitted);
+			rowOffsets.set(
+				candidate.entry.component,
+				(this.#renderedRowOffsets.get(candidate.entry.component) ?? 0) + emitted - output.length,
 			);
 			output.push(rendered[0] ?? "");
 			owners.push(candidate.entry.component);
 		}
 		const visibleOutput = output.slice(0, rows);
-		this.#commitViewportSpans(owners, visibleOutput.length);
+		this.#commitViewportSpans(owners, visibleOutput.length, rowOffsets);
 		return visibleOutput;
 	}
 

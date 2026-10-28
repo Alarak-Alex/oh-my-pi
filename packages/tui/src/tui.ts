@@ -267,6 +267,9 @@ export interface Component {
 	 */
 	render(width: number): readonly string[];
 
+	/** Snapshot hit-testing for controls in the last classic render, using zero-based local cell coordinates. */
+	getInlineClickHandler?(width: number): ((column: number, row: number) => boolean) | undefined;
+
 	/**
 	 * Describe the component semantically for a Tern Surface Protocol
 	 * terminal (see `native/node.ts`). Called instead of `render()` when the
@@ -635,6 +638,46 @@ export class Container implements Component {
 		}
 		this.#memoLines = lines;
 		return lines;
+	}
+
+	/** Child controls in the last concatenated render; custom renderers must preserve these coordinates. */
+	getChildInlineClickHandler(width: number): ((column: number, row: number) => boolean) | undefined {
+		const lines = this.#memoLines;
+		if (lines === undefined || this.#memoWidth !== width) return undefined;
+		const targets: { start: number; end: number; click: (column: number, row: number) => boolean }[] = [];
+		let start = 0;
+		for (let index = 0; index < this.children.length; index++) {
+			const child = this.children[index]!;
+			const end = start + (this.#memoChildLines[index]?.length ?? 0);
+			const click =
+				child.getInlineClickHandler?.(width) ??
+				(child instanceof Container && child.render === Container.prototype.render
+					? child.getChildInlineClickHandler(width)
+					: undefined);
+			if (click !== undefined) targets.push({ start, end, click });
+			start = end;
+		}
+		if (targets.length === 0) return undefined;
+		const children = this.children.slice();
+		return (column, row) => {
+			if (
+				this.#memoLines !== lines ||
+				this.#memoWidth !== width ||
+				children.length !== this.children.length ||
+				children.some((child, index) => child !== this.children[index]) ||
+				!Number.isInteger(column) ||
+				column < 0 ||
+				column >= width ||
+				!Number.isInteger(row) ||
+				row < 0 ||
+				row >= lines.length
+			)
+				return false;
+			for (const target of targets) {
+				if (row >= target.start && row < target.end) return target.click(column, row - target.start);
+			}
+			return false;
+		};
 	}
 
 	describe(_cx: DescribeContext): NativeNode | null {
