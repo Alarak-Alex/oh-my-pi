@@ -131,6 +131,42 @@ describe("OAuth refresh budget", () => {
 		expect(store.tryAcquireCredentialRefreshLease(credentialId, "peer", Date.now() + 15_000)).toBe(true);
 	});
 
+	test("cancels a waiter without starting an exchange or rejecting the abandoned refresh", async () => {
+		if (!store) throw new Error("test setup failed");
+		const authStorage = new AuthStorage(store, {});
+		await authStorage.credentials.set(PROVIDER, [
+			{ type: "oauth", access: "access-r0", refresh: "r0", expires: Date.now() - 60_000 },
+		]);
+		const credentialId = store.listAuthCredentials(PROVIDER)[0]!.id;
+		expect(store.tryAcquireCredentialRefreshLease(credentialId, "peer", Date.now() + 15_000)).toBe(true);
+		const waiting = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		vi.spyOn(Bun, "sleep").mockImplementation(() => {
+			waiting.resolve();
+			return release.promise;
+		});
+		const controller = new AbortController();
+		let exchanged = false;
+		const refresh = authStorage.oauth.refreshStored(PROVIDER, {
+			credentialId,
+			credentialFromRow: row => row,
+			forceRefresh: true,
+			signal: controller.signal,
+			refresh: async () => {
+				exchanged = true;
+				throw new Error("cancelled caller must not exchange");
+			},
+		});
+		await waiting.promise;
+		controller.abort();
+		try {
+			expect(await refresh).toEqual({ credential: undefined, refreshed: false, removed: false });
+			expect(exchanged).toBe(false);
+		} finally {
+			release.resolve();
+		}
+	});
+
 	test("a peer waiting on a held lease gives up at its budget", async () => {
 		if (!store) throw new Error("test setup failed");
 		const authStorage = new AuthStorage(store, {});

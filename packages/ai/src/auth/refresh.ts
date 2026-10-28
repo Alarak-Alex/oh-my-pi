@@ -407,89 +407,97 @@ export class OAuthRefresher {
 		// Waiting on a peer's lease counts against the same budget as the exchange.
 		const waitDeadline = Date.now() + budgetMs;
 
-		while (leaseStore) {
-			if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped during shutdown");
-			if (options.signal?.aborted) throw new AIError.AbortError("OAuth refresh ownership aborted by caller");
-			const rows = this.#deps.store.listAuthCredentials(provider);
-			this.#deps.pool.replace(
-				provider,
-				rows.map(row => ({ id: row.id, credential: row.credential })),
-			);
-			const row = rows.find(
-				entry =>
-					entry.credential.type === "oauth" &&
-					(options.credentialId === undefined || entry.id === options.credentialId),
-			);
-			if (row?.credential.type !== "oauth") {
-				return { credential: undefined, refreshed: false, removed: false };
-			}
-			const current = options.credentialFromRow(row.credential);
-			if (!current) {
-				return { credential: undefined, refreshed: false, removed: false };
-			}
-			const currentIsFresh = Date.now() + refreshSkewMs < current.expires;
-			// A peer rotated the credential out from under the caller's observation.
-			// Adopt the stored copy only when it is still usable; a stored copy that
-			// is itself expired must fall through to a refresh rather than be handed
-			// back and fail the downstream `getOAuthApiKey` expiry precondition.
-			if (currentIsFresh && this.#storedIsNewer(current, options)) {
-				return { credential: current, refreshed: false, removed: false };
-			}
-			if (!options.forceRefresh && currentIsFresh) {
-				return { credential: current, refreshed: false, removed: false };
-			}
-			if (options.canRefresh && !options.canRefresh(current)) {
-				return { credential: current, refreshed: false, removed: false };
-			}
-			// A caller whose budget ran out must not start an exchange it will not wait for.
-			if (Date.now() >= waitDeadline) return this.#budgetExceeded(provider, options, current);
-			// This process already had this refresh token rejected after taking over
-			// a stalled refresher, which may still save its successor: wait for that
-			// save instead of replaying the token at the provider.
-			const stalled = this.#stalledRefreshes.get(row.id);
-			if (stalled) {
-				const stalledMs = stalled.until - Date.now();
-				if (stalled.refresh === current.refresh && stalledMs > 0) {
-					await raceSignal(
-						Bun.sleep(Math.min(stalledMs, waitDeadline - Date.now(), OAUTH_REFRESH_LEASE_WAIT_MAX_MS)),
-						options.signal,
-						"OAuth refresh wait for a stalled refresher aborted by caller",
-					);
-					continue;
+		try {
+			while (leaseStore) {
+				if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped during shutdown");
+				if (options.signal?.aborted) throw new AIError.AbortError("OAuth refresh ownership aborted by caller");
+				const rows = this.#deps.store.listAuthCredentials(provider);
+				this.#deps.pool.replace(
+					provider,
+					rows.map(row => ({ id: row.id, credential: row.credential })),
+				);
+				const row = rows.find(
+					entry =>
+						entry.credential.type === "oauth" &&
+						(options.credentialId === undefined || entry.id === options.credentialId),
+				);
+				if (row?.credential.type !== "oauth") {
+					return { credential: undefined, refreshed: false, removed: false };
 				}
-				this.#stalledRefreshes.delete(row.id);
-			}
-			// A lease row still naming another owner means that owner stalled or died
-			// holding it. It may have spent the stored refresh token already and still
-			// be retrying the save of its successor, so remember it: a rejection of
-			// that token is then not proof the login is dead.
-			const priorHolder = leaseStore.getCredentialRefreshLeaseHolder?.(row.id);
-			if (leaseStore.tryAcquireCredentialRefreshLease(row.id, owner, Date.now() + OAUTH_REFRESH_LEASE_TTL_MS)) {
-				leasedCredentialId = row.id;
-				if (
-					priorHolder &&
-					priorHolder.owner !== owner &&
-					Date.now() - priorHolder.expiresAtMs < OAUTH_REFRESH_STALLED_OWNER_MS
-				) {
-					takenOverFrom = priorHolder;
+				const current = options.credentialFromRow(row.credential);
+				if (!current) {
+					return { credential: undefined, refreshed: false, removed: false };
 				}
-				break;
-			}
-			const leaseExpiresAt = leaseStore.getCredentialRefreshLeaseExpiresAt(row.id);
-			const waitMs =
-				leaseExpiresAt === undefined
-					? OAUTH_REFRESH_LEASE_POLL_MS
-					: Math.min(
-							Math.max(leaseExpiresAt - Date.now(), OAUTH_REFRESH_LEASE_POLL_MS),
-							OAUTH_REFRESH_LEASE_WAIT_MAX_MS,
+				const currentIsFresh = Date.now() + refreshSkewMs < current.expires;
+				// A peer rotated the credential out from under the caller's observation.
+				// Adopt the stored copy only when it is still usable; a stored copy that
+				// is itself expired must fall through to a refresh rather than be handed
+				// back and fail the downstream `getOAuthApiKey` expiry precondition.
+				if (currentIsFresh && this.#storedIsNewer(current, options)) {
+					return { credential: current, refreshed: false, removed: false };
+				}
+				if (!options.forceRefresh && currentIsFresh) {
+					return { credential: current, refreshed: false, removed: false };
+				}
+				if (options.canRefresh && !options.canRefresh(current)) {
+					return { credential: current, refreshed: false, removed: false };
+				}
+				// A caller whose budget ran out must not start an exchange it will not wait for.
+				if (Date.now() >= waitDeadline) return this.#budgetExceeded(provider, options, current);
+				// This process already had this refresh token rejected after taking over
+				// a stalled refresher, which may still save its successor: wait for that
+				// save instead of replaying the token at the provider.
+				const stalled = this.#stalledRefreshes.get(row.id);
+				if (stalled) {
+					const stalledMs = stalled.until - Date.now();
+					if (stalled.refresh === current.refresh && stalledMs > 0) {
+						await raceSignal(
+							Bun.sleep(Math.min(stalledMs, waitDeadline - Date.now(), OAUTH_REFRESH_LEASE_WAIT_MAX_MS)),
+							options.signal,
+							"OAuth refresh wait for a stalled refresher aborted by caller",
 						);
-			const remainingMs = waitDeadline - Date.now();
-			if (remainingMs <= 0) return this.#budgetExceeded(provider, options, current);
-			await raceSignal(
-				Bun.sleep(Math.min(waitMs, remainingMs)),
-				options.signal,
-				"OAuth refresh ownership wait aborted by caller",
-			);
+						continue;
+					}
+					this.#stalledRefreshes.delete(row.id);
+				}
+				// A lease row still naming another owner means that owner stalled or died
+				// holding it. It may have spent the stored refresh token already and still
+				// be retrying the save of its successor, so remember it: a rejection of
+				// that token is then not proof the login is dead.
+				const priorHolder = leaseStore.getCredentialRefreshLeaseHolder?.(row.id);
+				if (leaseStore.tryAcquireCredentialRefreshLease(row.id, owner, Date.now() + OAUTH_REFRESH_LEASE_TTL_MS)) {
+					leasedCredentialId = row.id;
+					if (
+						priorHolder &&
+						priorHolder.owner !== owner &&
+						Date.now() - priorHolder.expiresAtMs < OAUTH_REFRESH_STALLED_OWNER_MS
+					) {
+						takenOverFrom = priorHolder;
+					}
+					break;
+				}
+				const leaseExpiresAt = leaseStore.getCredentialRefreshLeaseExpiresAt(row.id);
+				const waitMs =
+					leaseExpiresAt === undefined
+						? OAUTH_REFRESH_LEASE_POLL_MS
+						: Math.min(
+								Math.max(leaseExpiresAt - Date.now(), OAUTH_REFRESH_LEASE_POLL_MS),
+								OAUTH_REFRESH_LEASE_WAIT_MAX_MS,
+							);
+				const remainingMs = waitDeadline - Date.now();
+				if (remainingMs <= 0) return this.#budgetExceeded(provider, options, current);
+				await raceSignal(
+					Bun.sleep(Math.min(waitMs, remainingMs)),
+					options.signal,
+					"OAuth refresh ownership wait aborted by caller",
+				);
+			}
+		} catch (error) {
+			// No token was spent while waiting for ownership; only the caller stopped waiting.
+			if (!this.#shuttingDown && options.signal?.aborted && error instanceof AIError.AbortError) {
+				return { credential: undefined, refreshed: false, removed: false };
+			}
+			throw error;
 		}
 
 		try {
@@ -525,9 +533,8 @@ export class OAuthRefresher {
 			// Arm the drain first: once exit has begun, arming it sets `#shuttingDown`, so a
 			// refresh that starts then stops here instead of spending a token nobody saves.
 			this.#armShutdownDrain();
-			if (this.#shuttingDown || options.signal?.aborted) {
-				throw new AIError.AbortError("OAuth refresh stopped before token exchange");
-			}
+			if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped before token exchange");
+			if (options.signal?.aborted) return { credential: undefined, refreshed: false, removed: false };
 			const serialized = serializeCredential(provider, current);
 			if (!serialized) return { credential: current, refreshed: false, removed: false };
 			// Acquiring the lease can block on SQLite past the deadline; do not start an exchange nobody waits for.
