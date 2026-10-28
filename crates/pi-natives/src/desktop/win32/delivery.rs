@@ -41,6 +41,9 @@ pub struct TargetTraits<'a> {
 	/// The target renders XAML/UWP/WinUI content, whose `CoreInput`
 	/// dispatcher reads keyboard input only from the system input queue.
 	pub xaml_host:           bool,
+	/// Another window shows at the pointer event's screen point instead of the
+	/// target (`WindowFromPoint`); false for keys and window-level checks.
+	pub covered:             bool,
 }
 
 pub fn is_chromium_class(class: &str) -> bool {
@@ -156,11 +159,15 @@ pub fn would_be_silently_dropped(
 	if is_vcl_class(class) && matches!(kind, Keystroke | KeyCombo) {
 		return Some("VCL accelerators require real key state from the system input queue");
 	}
+	// WinForms `ButtonBase` clicks on a left-button release only when
+	// `WindowFromPoint` at the release point is the button itself.
 	if winforms_base_class(class).is_some_and(|base| base.eq_ignore_ascii_case("BUTTON"))
+		&& target.covered
 		&& matches!(kind, MouseClick)
 	{
 		return Some(
-			"WinForms buttons, check boxes and radio buttons ignore posted mouse-button messages",
+			"WinForms buttons, check boxes and radio buttons ignore a click where another window \
+			 covers them",
 		);
 	}
 	if is_terminal_class(class) && !target.foreground && matches!(kind, TextInput) {
@@ -283,7 +290,13 @@ mod tests {
 	}
 
 	const fn background(class: &str) -> TargetTraits<'_> {
-		TargetTraits { class, chromium_descendant: false, foreground: false, xaml_host: false }
+		TargetTraits {
+			class,
+			chromium_descendant: false,
+			foreground: false,
+			xaml_host: false,
+			covered: false,
+		}
 	}
 
 	#[test]
@@ -314,19 +327,21 @@ mod tests {
 	}
 
 	#[test]
-	fn winforms_refuses_posted_clicks_only_on_button_class_controls() {
+	fn winforms_refuses_posted_clicks_only_on_covered_button_class_controls() {
+		let covered = |class| TargetTraits { covered: true, ..background(class) };
 		// Button, CheckBox and RadioButton all register the `BUTTON` base class.
-		assert_matrix(background("WindowsForms10.BUTTON.app.0.141b42a_r8_ad1"), [
-			true, false, false, false, false, false,
-		]);
-		assert_matrix(background("WindowsForms10.Button.app.0.2bf8098_r6_ad1"), [
-			true, false, false, false, false, false,
-		]);
+		for class in [
+			"WindowsForms10.BUTTON.app.0.141b42a_r8_ad1",
+			"WindowsForms10.Button.app.0.2bf8098_r6_ad1",
+		] {
+			assert_matrix(covered(class), [true, false, false, false, false, false]);
+			assert_matrix(background(class), [false; 6]);
+		}
 		// Forms and text boxes keep posted clicks (caret placement) and keys.
-		assert_matrix(background("WindowsForms10.Window.8.app.0.141b42a_r8_ad1"), [false; 6]);
-		assert_matrix(background("WindowsForms10.EDIT.app.0.141b42a_r8_ad1"), [false; 6]);
-		assert_matrix(background("WindowsForms10.BUTTON.app."), [false; 6]);
-		assert_matrix(background("Button"), [false; 6]);
+		assert_matrix(covered("WindowsForms10.Window.8.app.0.141b42a_r8_ad1"), [false; 6]);
+		assert_matrix(covered("WindowsForms10.EDIT.app.0.141b42a_r8_ad1"), [false; 6]);
+		assert_matrix(covered("WindowsForms10.BUTTON.app."), [false; 6]);
+		assert_matrix(covered("Button"), [false; 6]);
 	}
 
 	#[test]
