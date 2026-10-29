@@ -578,10 +578,8 @@ export const cfgTuiMouse = register({
 		tab: "appearance",
 		group: "Display",
 		label: "Mouse Click-to-Focus",
-		get description() {
-			const shift = formatKeyHint("shift");
-			return `Capture mouse clicks in the main session for live table copy controls, focusing subagent cards and HUD rows, and extension-owned links (the link-hint key picks them without the mouse), with a hover highlight on focus targets. Native text selection becomes ${shift}+drag and wheel scroll becomes ${shift}+wheel while on`;
-		},
+		description:
+			"Focus live subagent cards, HUD rows, and extension-owned links (the link-hint key picks them without the mouse) on a completed click, with a hover highlight on focus targets. Transcript drag selection, wheel scrolling, and table copy controls work independently of this option",
 	},
 });
 

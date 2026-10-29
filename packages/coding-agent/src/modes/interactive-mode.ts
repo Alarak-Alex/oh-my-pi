@@ -25,6 +25,8 @@ import type {
 	OverlayHandle,
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
+import type { SgrMouseEvent } from "@oh-my-pi/pi-tui/mouse";
+import type { TranscriptSelectionResult } from "@oh-my-pi/pi-tui/components/transcript-selection";
 import {
 	Container,
 	clearRenderCache,
@@ -1913,8 +1915,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.composer.viewportClickCandidates(index);
 	}
 
-	handleViewportClick(column: number, row: number): boolean {
-		return this.composer.handleViewportClick(column, row);
+	handleTranscriptMouse(event: SgrMouseEvent): TranscriptSelectionResult {
+		return this.composer.handleTranscriptMouse(event);
 	}
 
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */
@@ -2121,7 +2123,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.ui.requestRender();
 			}),
 		);
-		this.ui.setInlineMouseTrackingProvider(() => this.#mouseCapture);
+		this.ui.setInlineMouseTrackingProvider(() => this.#mouseCapture || this.composer.hasInlineClickTargets());
 		setExtensionLinkPicking(this.#linkPickable);
 		// Tern's native view routes link clicks itself, so claimed links stop (or start) being
 		// pickable here: re-run the renderers reading `getLinkClicksAvailable()`.
@@ -2549,7 +2551,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#inputController.setupEditorSubmitHandler();
 		// Native transcript controls (user-message toolbar, error-frame actions)
 		// run the same commands as their key bindings.
-		setTranscriptActionHandler(action => {
+		setTranscriptActionHandler((action, options) => {
 			switch (action.act) {
 				case "retry":
 					void this.#inputController.handleRetry();
@@ -2567,7 +2569,9 @@ export class InteractiveMode implements InteractiveModeContext {
 					return;
 				case "copy":
 					copyToClipboard(action.text).then(
-						() => this.showStatus("Copied to clipboard"),
+						() => {
+							if (!options?.quiet) this.showStatus("Copied to clipboard");
+						},
 						(error: unknown) =>
 							this.showWarning(`Copy failed: ${error instanceof Error ? error.message : String(error)}`),
 					);

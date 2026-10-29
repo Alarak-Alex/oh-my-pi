@@ -112,6 +112,7 @@ interface Component {
 | `handleInput?(data)`     | Called when the component has focus and receives keyboard input. The `data` string contains raw terminal input (may include ANSI escape sequences).                |
 | `invalidate?()`          | Called to clear any cached render state. Components should re-render from scratch on the next `render()` call.                                                     |
 | `releaseRenderCaches?()` | Drops only derived render caches. The next `render()` must return the same rows without eager rebuilds, renderer callbacks, image conversions, or child replacement. |
+| `getInlineControlResolver?(width)` | Returns a pure hit-test snapshot of the last classic render. Controls expose stable identity, half-open cell bounds and a separate guarded `activate()`; querying never performs the action. |
 
 ## Built-in Components
 
@@ -368,18 +369,31 @@ md.setText("Updated markdown");
 
 When the host provides transcript actions, Markdown tables offer **Copy TSV**,
 **Copy CSV**, and **Copy Markdown** controls. Each action copies only that table,
-not its surrounding message; TSV and CSV use plain cell text with
-delimiter-aware quoting, and Markdown returns the table as parsed, with line
-endings normalized and tabs expanded. Tern draws the controls as native buttons.
-In classic terminals, clicking live table controls requires the existing
-`tui.mouse` setting. It remains off by default; when enabled, use Shift+drag for
-native text selection and Shift+wheel for native scrollback. Already-retired
-scrollback rows are not interactive.
+not its surrounding message. TSV and CSV use plain cell text with delimiter-aware
+quoting; Markdown returns the table as parsed, with line endings normalized and
+tabs expanded.
 
-Without mouse capture, or for older tables, run `/copy`, select the message,
-press Right to choose a table and format, then Enter to copy. Tables nested in
-lists or blockquotes keep their surrounding structure, and a source that cannot
-be split losslessly keeps the whole document instead.
+Tern exposes these as native buttons. In classic terminals, ordinary mouse drags
+select and copy visible transcript text on release; wheel browsing preserves the
+editor's existing position instead of forcing short conversations to fill the
+screen. Selection and pointer feedback do not recompose the document. Visible
+native-history rows remain selectable and their table controls stay clickable.
+Buttons highlight on hover and press, and copy on release anywhere inside
+the original button. Moving outside cancels the press feedback; returning before
+release restores it. Starting a drag in text remains text selection even when it
+crosses a button. Fast drags do not require intermediate motion reports, and
+redraws outside selected cells preserve a stable selection.
+These interactions work without Shift and independently of the `tui.mouse`
+click-to-focus setting. Resize, overlays and session changes cancel old gestures.
+Successful classic mouse copies are quiet: they do not insert chat notices or
+reset a scrolled view. Copy errors remain visible; native and keyboard feedback
+keeps its existing behavior.
+
+For keyboard-only copying, run `/copy`, select the message, press Right to choose
+a table and format, then Enter to copy. Tables nested in
+lists or blockquotes keep their surrounding structure; their native controls
+follow the containing block. If the source cannot be split losslessly, native
+controls follow the unchanged document instead.
 
 ### Loader
 

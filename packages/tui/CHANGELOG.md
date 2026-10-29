@@ -30,6 +30,14 @@
 ### Added
 
 - Markdown tables offer per-table TSV, CSV, and Markdown copy controls in Tern and the live classic-terminal viewport; the `/copy` picker also lists each table and format.
+- Ordinary transcript drags select and copy text without Shift; wheel browsing keeps the editor fixed and preserves clickable controls on historical tables.
+
+### Fixed
+
+- Classic table controls now highlight on hover and press, tolerate movement within the same button, and support drag-out cancellation and re-entry without selecting their labels.
+- Fast transcript drags copy on release even without intermediate motion reports; unrelated streaming updates no longer clear selections whose cells remain unchanged.
+- Preserved the original editor/header/body geometry during wheel and selection redraws; short conversations no longer gain fullscreen padding, and browsing back to latest restores the original allocation.
+- Visible native history now supports source-guarded pointer painting without appending history or moving the mutable viewport; temporary selections and historical views are restored before scrollback writes and terminal handoff.
 
 ## [18.13.3] - 2026-10-28
 

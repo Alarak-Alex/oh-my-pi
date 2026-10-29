@@ -1,5 +1,9 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
-import { setTranscriptActionHandler, type TranscriptAction } from "@oh-my-pi/pi-tui/chat/transcript-actions";
+import {
+	setTranscriptActionHandler,
+	type TranscriptAction,
+	type TranscriptActionOptions,
+} from "@oh-my-pi/pi-tui/chat/transcript-actions";
 import { extractMarkdownLinks, extractMarkdownTables, Markdown } from "@oh-my-pi/pi-tui/components/markdown";
 import { nativeComponentId } from "@oh-my-pi/pi-tui/native/reconcile";
 import { Lexer } from "@oh-my-pi/pi-utils/marked";
@@ -35,8 +39,10 @@ function click(h: TspHarness, control: TspNode): void {
 describe("Markdown table copy actions", () => {
 	it("places controls beside each real table and dispatches only that table's requested format", async () => {
 		const actions: TranscriptAction[] = [];
-		setTranscriptActionHandler(action => {
+		const feedback: (TranscriptActionOptions | undefined)[] = [];
+		setTranscriptActionHandler((action, options) => {
 			actions.push(action);
+			feedback.push(options);
 		});
 		const first = "| Name | Value |\n| --- | --- |\n| **Alice** | a,b |\n";
 		const second = "| Item | Note |\n| --- | --- |\n| β | a\\|b |\n";
@@ -63,6 +69,7 @@ describe("Markdown table copy actions", () => {
 			{ act: "copy", text: "Item,Note\nβ,a|b" },
 			{ act: "copy", text: second.trimEnd() },
 		]);
+		expect(feedback).toEqual([undefined, undefined, undefined, undefined, undefined, undefined]);
 		expect(h.errors).toEqual([]);
 	});
 

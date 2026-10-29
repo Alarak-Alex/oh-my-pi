@@ -24,6 +24,7 @@ import { listMayContinueAt } from "@oh-my-pi/pi-utils/marked-list";
 import { hasTranscriptActions, runTranscriptAction } from "../chat/transcript-actions";
 import { latexToBlock } from "../latex-block";
 import { isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
+import type { InlineControl, InlineControlResolver } from "../mouse";
 import { plainText } from "../native/spans";
 import { col, keyed, md, node, stableKey } from "../native/describe";
 import type { DescribeContext, NativeNode, NativeUiEvent } from "../native/node";
@@ -1203,7 +1204,7 @@ interface InlineTableFrame {
 	rawRows: readonly string[];
 	rows: readonly string[];
 	regions: InlineTableRegion[];
-	click?: (column: number, row: number) => boolean;
+	resolveControl?: InlineControlResolver;
 }
 
 interface RenderedLine {
@@ -3107,10 +3108,10 @@ export class Markdown implements Component {
 	}
 
 	/** A snapshot of the last painted table controls; never redirects stale cell coordinates after a redraw. */
-	getInlineClickHandler(width: number): ((column: number, row: number) => boolean) | undefined {
+	getInlineControlResolver(width: number): InlineControlResolver | undefined {
 		const frame = this.#inlineTableFrame;
 		if (!frame || frame.width !== width || frame.source !== this.#text || !hasTranscriptActions()) return undefined;
-		if (frame.click) return frame.click;
+		if (frame.resolveControl) return frame.resolveControl;
 		const tabbed = this.#text.includes("\t") ? replaceTabs(this.#text) : this.#text;
 		const tokens = lexDocument(this.#transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed));
 		const original = tablesInBlocks(tokens);
@@ -3122,21 +3123,40 @@ export class Markdown implements Component {
 			const source = original[index];
 			if (source) tables.set(stableKey(table.raw), source);
 		}
-		frame.click = (column, row): boolean => {
+		const controls: InlineControl[] = [];
+		for (const region of frame.regions) {
+			const table = tables.get(region.id);
+			if (table === undefined) continue;
+			controls.push({
+				id: region,
+				row: region.row,
+				from: region.from,
+				to: region.to,
+				activate: () =>
+					this.#inlineTableFrame === frame &&
+					frame.source === this.#text &&
+					hasTranscriptActions() &&
+					runTranscriptAction(
+						{ act: "copy", text: formatTableForClipboard(table, region.format) },
+						{ quiet: true },
+					),
+			});
+		}
+		frame.resolveControl = (column, row) => {
 			if (
 				this.#inlineTableFrame !== frame ||
+				frame.source !== this.#text ||
 				!hasTranscriptActions() ||
 				!Number.isInteger(column) ||
 				!Number.isInteger(row)
 			)
-				return false;
-			const region = frame.regions.find(region => region.row === row && column >= region.from && column < region.to);
-			const table = region && tables.get(region.id);
-			return table && region
-				? runTranscriptAction({ act: "copy", text: formatTableForClipboard(table, region.format) })
-				: false;
+				return undefined;
+			for (const control of controls) {
+				if (control.row === row && column >= control.from && column < control.to) return control;
+			}
+			return undefined;
 		};
-		return frame.click;
+		return frame.resolveControl;
 	}
 
 	#renderRows(width: number): readonly string[] {

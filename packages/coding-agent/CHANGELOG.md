@@ -49,6 +49,16 @@
 - Fixed `lsp code_actions` passing diagnostics from an earlier version of a reopened file to quick-fix providers ([#17293](https://github.com/can1357/oh-my-pi/pull/17293))
 - Fixed `lsp diagnostics` getting no report from language servers that check files only on save ([#17293](https://github.com/can1357/oh-my-pi/pull/17293))
 - Copy individual Markdown tables as TSV, CSV, or Markdown through inline controls or `/copy`; classic-terminal clicks use the existing opt-in `tui.mouse` setting.
+- Copy individual Markdown tables as TSV, CSV, or Markdown through inline controls or `/copy`; live classic-terminal controls receive mouse clicks automatically, independently of the opt-in `tui.mouse` click-to-focus setting.
+- Select conversation text and browse history with ordinary mouse drags and wheel events, without requiring Shift; table buttons commit on release inside the originally pressed button.
+
+### Fixed
+
+- Polished classic table-copy mouse feedback and press/release handling: slight pointer movement no longer copies button-label fragments, leaving a button cancels, and returning before release restores the click.
+- Fast text drags no longer depend on intermediate motion packets; stable selections survive unrelated streaming redraws.
+- Agent-card hover highlighting now restores correctly after the pointer passes over a table-copy button.
+- Classic mouse copying no longer inserts or replaces chat status notices, preventing repeated selection from changing the transcript or jumping back to latest; failures and default native/keyboard copy feedback remain visible.
+- Wheel browsing and selection preserve the original input position and visible conversation; opt-in pinned-HUD presses retain their existing behavior.
 
 ## [18.13.3] - 2026-10-28
 

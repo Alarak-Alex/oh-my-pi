@@ -16,7 +16,12 @@ export type TranscriptAction =
 	/** Put `text` on the clipboard. */
 	| { readonly act: "copy"; readonly text: string };
 
-type Handler = (action: TranscriptAction) => void;
+export interface TranscriptActionOptions {
+	/** Suppress successful copy feedback without hiding failures. */
+	readonly quiet?: boolean;
+}
+
+type Handler = (action: TranscriptAction, options?: TranscriptActionOptions) => void;
 
 let handler: Handler | undefined;
 
@@ -26,9 +31,9 @@ export function setTranscriptActionHandler(next: Handler | undefined): void {
 }
 
 /** Run `action` through the host; false when no host handles actions. */
-export function runTranscriptAction(action: TranscriptAction): boolean {
+export function runTranscriptAction(action: TranscriptAction, options?: TranscriptActionOptions): boolean {
 	if (!handler) return false;
-	handler(action);
+	handler(action, options);
 	return true;
 }
 
