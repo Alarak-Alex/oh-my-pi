@@ -369,10 +369,10 @@ md.setText("Updated markdown");
 When the host provides transcript actions, Markdown tables offer **Copy TSV**,
 **Copy CSV**, and **Copy Markdown** controls. Each action copies only that table,
 not its surrounding message; TSV and CSV use plain cell text with
-delimiter-aware quoting, and Markdown preserves the table's source formatting.
-Tern draws the controls as native buttons. Tables nested in lists or blockquotes
-keep their surrounding structure, and a source that cannot be split losslessly
-keeps the whole document instead.
+delimiter-aware quoting, and Markdown returns the table as parsed, with line
+endings normalized and tabs expanded. Tern draws the controls as native buttons.
+Tables nested in lists or blockquotes keep their surrounding structure, and a
+source that cannot be split losslessly keeps the whole document instead.
 
 For keyboard-only copying, run `/copy`, select the message, press Right to choose
 a table and format, then Enter to copy.

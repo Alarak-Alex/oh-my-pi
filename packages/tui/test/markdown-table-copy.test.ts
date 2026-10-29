@@ -59,6 +59,14 @@ describe("Markdown table clipboard formats", () => {
 		expect(formatTableForClipboard(table, "markdown")).toBe(source);
 	});
 
+	it("returns Markdown as parsed, so CRLF and tabs from the source are normalized", () => {
+		const table = tableFrom("| H |\r\n| --- |\r\n| a\tb |");
+
+		// The parser rewrites the source before tokenizing; table tokens carry no
+		// offsets back into it, so the normalized form is the documented contract.
+		expect(formatTableForClipboard(table, "markdown")).toBe("| H |\n| --- |\n| a    b |");
+	});
+
 	it("keeps an empty last header cell without adding an empty body row or a trailing record separator", () => {
 		const table = tableFrom("| A | |\n| --- | --- |\n");
 

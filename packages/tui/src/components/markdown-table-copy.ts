@@ -25,7 +25,13 @@ function inlineText(tokens: Token[]): string {
 	return text;
 }
 
-/** Serialize only this parsed table; clipboard writes belong to the host's copy action. */
+/**
+ * Serialize only this parsed table; clipboard writes belong to the host's copy action.
+ *
+ * `markdown` returns the table as the parser produced it, so CRLF is normalized to
+ * LF and tabs are expanded: Marked rewrites the source before tokenizing, and the
+ * table tokens carry no offsets back into it. TSV/CSV build from cell text.
+ */
 export function formatTableForClipboard(table: Tokens.Table, format: TableCopyFormat): string {
 	if (format === "markdown") return table.raw.replace(/[\r\n]+$/, "");
 	const delimiter = format === "csv" ? "," : "\t";
