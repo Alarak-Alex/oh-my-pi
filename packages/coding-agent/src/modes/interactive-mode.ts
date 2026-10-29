@@ -267,7 +267,7 @@ import {
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { setSvgFigureRendering } from "@oh-my-pi/pi-tui/chat/svg-figure";
 import { setTableCharts } from "@oh-my-pi/pi-tui/chat/table-chart";
-import { setTranscriptActionHandler } from "@oh-my-pi/pi-tui/chat/transcript-actions";
+import { setTranscriptActionHandler, setTranscriptMouseEnabled } from "@oh-my-pi/pi-tui/chat/transcript-actions";
 import { StatusNotice } from "@oh-my-pi/pi-tui/chrome/status-notice";
 import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -421,6 +421,7 @@ import {
 	cfgTuiMaxInlineImages,
 	cfgTuiAutoGraph,
 	cfgTuiMouse,
+	cfgTuiTranscriptMouse,
 	cfgTuiRenderMermaid,
 	cfgTuiRenderSvg,
 	cfgTuiResizeScrollback,
@@ -1984,6 +1985,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#eventBusUnsubscribers: Array<() => void> = [];
 	/** Mirror of `tui.mouse`, read by the TUI's per-frame inline mouse tracking probe. */
 	#mouseCapture = false;
+	/** Mirror of `tui.transcriptMouse`: the opt-in for transcript selection, browsing and table controls. */
+	#transcriptMouse = false;
 	/** A link-scheme change awaits its transcript rebuild; any rebuild before it covers it. */
 	#extensionLinkRebuildPending = false;
 	#observerUiSyncTimer?: NodeJS.Timeout;
@@ -2106,6 +2109,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		// subscription rather than resolving the setting per render.
 		// Session settings overlay the global layer and forward its changes.
 		this.#mouseCapture = cfgTuiMouse.get(this.settings);
+		this.#transcriptMouse = cfgTuiTranscriptMouse.get(this.settings);
+		setTranscriptMouseEnabled(this.#transcriptMouse);
+		this.#eventBusUnsubscribers.push(
+			cfgTuiTranscriptMouse.listen(this.settings, on => {
+				this.#transcriptMouse = on;
+				setTranscriptMouseEnabled(on);
+				// A pending gesture, hover band, or footer belongs to the mode being turned off.
+				this.composer.setHoveredClickId(undefined);
+				this.ui.requestRender();
+			}),
+		);
 		this.#eventBusUnsubscribers.push(
 			cfgTuiMouse.listen(this.settings, on => {
 				const linksWereAvailable = extensionLinkClicksAvailable();

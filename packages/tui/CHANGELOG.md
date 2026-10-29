@@ -14,8 +14,8 @@
 - `AssistantMessageComponent` accepts display-only assistant text renderers and redraws one reply with `rerenderMessage(timestamp)`; `splitAssistantMessageToolTimeline` reports each segment's `contentOffsets` ([#16238](https://github.com/can1357/oh-my-pi/pull/16238) by [@materemias](https://github.com/materemias))
 - `setExtensionLinks()` makes markdown draw links of registered schemes as a dotted-underlined label without URL suffix or terminal hyperlink; `Composer.viewportLinkAt()` and `Composer.startLinkHints()` / `typeLinkHint()` pick them by click or keyboard tag (new `app.links.hint` keybinding, Alt+O) ([#16239](https://github.com/can1357/oh-my-pi/pull/16239) by [@materemias](https://github.com/materemias))
 - Markdown tables can be copied as TSV, CSV, or Markdown from Tern's native controls, and `/copy` lists each table and format ([#17352](https://github.com/can1357/oh-my-pi/pull/17352) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Markdown tables offer per-table TSV, CSV, and Markdown copy controls in Tern and the live classic-terminal viewport; the `/copy` picker also lists each table and format ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Ordinary transcript drags select and copy text without Shift; wheel browsing keeps the editor fixed and preserves clickable controls on historical tables ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
+- Markdown tables offer per-table TSV, CSV, and Markdown copy controls in Tern and the classic-terminal viewport; the `/copy` picker also lists each table and format. Classic-terminal controls are opt-in through `tui.transcriptMouse`, highlight on hover and press, tolerate movement within the same button, and support drag-out cancellation and re-entry without selecting their labels ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
+- Ordinary transcript drags select and copy text without Shift, including fast drags that arrive without intermediate motion reports; wheel browsing preserves the original editor/header/body geometry and keeps historical table controls clickable, and stable selections survive unrelated streaming updates. Visible native history gains source-guarded pointer painting that never appends history or moves the mutable viewport, with temporary selections restored before scrollback writes and terminal handoff ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
 
 ### Changed
 
@@ -30,10 +30,6 @@
 ### Fixed
 
 - Fixed the LSP diagnostics view showing "No issues" for files whose language server had not reported yet; they now show as unverified ([#17293](https://github.com/can1357/oh-my-pi/pull/17293) by [@JustasMasiulis](https://github.com/JustasMasiulis))
-- Classic table controls now highlight on hover and press, tolerate movement within the same button, and support drag-out cancellation and re-entry without selecting their labels ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Fast transcript drags copy on release even without intermediate motion reports; unrelated streaming updates no longer clear selections whose cells remain unchanged ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Preserved the original editor/header/body geometry during wheel and selection redraws; short conversations no longer gain fullscreen padding, and browsing back to latest restores the original allocation ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Visible native history now supports source-guarded pointer painting without appending history or moving the mutable viewport; temporary selections and historical views are restored before scrollback writes and terminal handoff ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
 
 ## [18.13.3] - 2026-10-28
 

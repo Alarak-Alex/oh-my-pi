@@ -11,8 +11,8 @@
 - Added opt-in extension reply renderers: with `extensionRenderers.assistantText` on, `pi.registerAssistantTextRenderer()` changes how assistant text is drawn (terminal and Tern native view) without touching the session or model context, and `ctx.ui.rerenderMessage(timestamp)` redraws one reply in place ([#16238](https://github.com/can1357/oh-my-pi/pull/16238) by [@materemias](https://github.com/materemias))
 - Added extension link schemes behind the same setting: links using a scheme claimed with `pi.registerLinkScheme()` draw as a dotted-underlined label and raise `link_activate` for that extension when picked with Alt+O (`app.links.hint`) or clicked with `tui.mouse` on; `ctx.ui.getLinkClicksAvailable()` lets a renderer fall back to inline content ([#16239](https://github.com/can1357/oh-my-pi/pull/16239) by [@materemias](https://github.com/materemias))
 - `/copy` lists each Markdown table as TSV, CSV, or Markdown, so one table can be copied without selecting the whole message ([#17352](https://github.com/can1357/oh-my-pi/pull/17352) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Copy individual Markdown tables as TSV, CSV, or Markdown through inline controls or `/copy`; live classic-terminal controls receive mouse clicks automatically, independently of the opt-in `tui.mouse` click-to-focus setting. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Select conversation text and browse history with ordinary mouse drags and wheel events, without requiring Shift; table buttons commit on release inside the originally pressed button. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
+- Copy individual Markdown tables as TSV, CSV, or Markdown through inline controls or `/copy`; classic-terminal controls are opt-in through `tui.transcriptMouse` and commit on release inside the originally pressed button, with hover and press feedback, drag-out cancellation, and quiet copies that no longer insert status notices ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
+- Select conversation text and browse history with ordinary mouse drags and wheel events, without requiring Shift; fast drags need no intermediate motion reports, agent-card hover restores after the pointer crosses a table-copy button, and wheel browsing keeps the original input position and visible conversation ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
 
 ### Changed
 
@@ -50,11 +50,6 @@
 - Fixed post-edit diagnostics showing "OK" or "no issues" when one of several language servers, or one file of a batched edit, had not reported yet ([#17293](https://github.com/can1357/oh-my-pi/pull/17293))
 - Fixed `lsp code_actions` passing diagnostics from an earlier version of a reopened file to quick-fix providers ([#17293](https://github.com/can1357/oh-my-pi/pull/17293))
 - Fixed `lsp diagnostics` getting no report from language servers that check files only on save ([#17293](https://github.com/can1357/oh-my-pi/pull/17293))
-- Polished classic table-copy mouse feedback and press/release handling: slight pointer movement no longer copies button-label fragments, leaving a button cancels, and returning before release restores the click. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Fast text drags no longer depend on intermediate motion packets; stable selections survive unrelated streaming redraws. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Agent-card hover highlighting now restores correctly after the pointer passes over a table-copy button. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Classic mouse copying no longer inserts or replaces chat status notices, preventing repeated selection from changing the transcript or jumping back to latest; failures and default native/keyboard copy feedback remain visible. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
-- Wheel browsing and selection preserve the original input position and visible conversation; opt-in pinned-HUD presses retain their existing behavior. ([#17337](https://github.com/can1357/oh-my-pi/pull/17337) by [@Alarak-Alex](https://github.com/Alarak-Alex))
 
 ## [18.13.3] - 2026-10-28
 

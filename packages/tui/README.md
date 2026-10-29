@@ -373,21 +373,24 @@ not its surrounding message. TSV and CSV use plain cell text with delimiter-awar
 quoting; Markdown returns the table as parsed, with line endings normalized and
 tabs expanded.
 
-Tern exposes these as native buttons. In classic terminals, ordinary mouse drags
-select and copy visible transcript text on release; wheel browsing preserves the
-editor's existing position instead of forcing short conversations to fill the
-screen. Selection and pointer feedback do not recompose the document. Visible
+Tern exposes these as native buttons. In classic terminals the controls are
+opt-in: enable `tui.transcriptMouse` and ordinary mouse drags select and copy
+visible transcript text on release, wheel browsing preserves the editor's
+existing position instead of forcing short conversations to fill the screen, and
+each table gains the copy control row. With the setting off, the terminal keeps
+native selection and scrollback, and `/copy` plus Tern's buttons still copy a
+table. Selection and pointer feedback do not recompose the document. Visible
 native-history rows remain selectable and their table controls stay clickable.
-Buttons highlight on hover and press, and copy on release anywhere inside
-the original button. Moving outside cancels the press feedback; returning before
+Buttons highlight on hover and press, and copy on release anywhere inside the
+original button. Moving outside cancels the press feedback; returning before
 release restores it. Starting a drag in text remains text selection even when it
 crosses a button. Fast drags do not require intermediate motion reports, and
-redraws outside selected cells preserve a stable selection.
-These interactions work without Shift and independently of the `tui.mouse`
-click-to-focus setting. Resize, overlays and session changes cancel old gestures.
-Successful classic mouse copies are quiet: they do not insert chat notices or
-reset a scrolled view. Copy errors remain visible; native and keyboard feedback
-keeps its existing behavior.
+redraws outside selected cells preserve a stable selection. These interactions
+work without Shift and independently of the `tui.mouse` click-to-focus setting.
+Resize, overlays and session changes cancel old gestures. Successful classic
+mouse copies are quiet: they do not insert chat notices or reset a scrolled
+view. Copy errors remain visible; native and keyboard feedback keeps its
+existing behavior.
 
 For keyboard-only copying, run `/copy`, select the message, press Right to choose
 a table and format, then Enter to copy. Tables nested in

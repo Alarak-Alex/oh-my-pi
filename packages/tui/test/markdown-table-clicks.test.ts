@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import {
 	setTranscriptActionHandler,
+	setTranscriptMouseEnabled,
 	type TranscriptAction,
 	type TranscriptActionOptions,
 } from "../src/chat/transcript-actions";
@@ -12,6 +13,7 @@ import { stripTerminalSequences, visibleWidth } from "../src/utils";
 
 beforeAll(async () => {
 	await initTheme(false);
+	setTranscriptMouseEnabled(true);
 });
 
 afterEach(() => {
@@ -29,6 +31,19 @@ function controls(rows: readonly string[], label: string): { column: number; row
 }
 
 describe("Markdown row table controls", () => {
+	it("draws no classic controls and resolves nothing while the pointer layer is off", () => {
+		setTranscriptActionHandler(() => {});
+		setTranscriptMouseEnabled(false);
+		try {
+			const markdown = new Markdown("| Name | Value |\n| --- | --- |\n| A | 1 |", 0, 0, getMarkdownTheme());
+			const rows = markdown.render(60);
+			expect(stripTerminalSequences(rows.join("\n"))).not.toContain("[Copy TSV]");
+			expect(markdown.getInlineControlResolver(60)).toBeUndefined();
+		} finally {
+			setTranscriptMouseEnabled(true);
+		}
+	});
+
 	it("resolves exact button cells without copying and activates the selected table with its original payload", () => {
 		const actions: TranscriptAction[] = [];
 		const feedback: (TranscriptActionOptions | undefined)[] = [];

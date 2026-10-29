@@ -7,7 +7,14 @@ import { VirtualTerminal } from "./virtual-terminal";
 import { routeViewportClick, type ViewportClickSpan } from "@oh-my-pi/pi-tui/prompt/composer";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { setTranscriptActionHandler, type TranscriptAction } from "@oh-my-pi/pi-tui/chat/transcript-actions";
+import {
+	setTranscriptActionHandler,
+	setTranscriptMouseEnabled,
+	type TranscriptAction,
+} from "@oh-my-pi/pi-tui/chat/transcript-actions";
+
+// Classic inline controls are opt-in; these tests exercise the enabled mode.
+setTranscriptMouseEnabled(true);
 import { parseSgrMouse } from "@oh-my-pi/pi-tui/mouse";
 
 function mouse(button: number, column: number, row: number, release = false) {
@@ -353,6 +360,30 @@ describe("composer classic table controls", () => {
 			expect(composer.ui.isInlineMouseTrackingActive()).toBe(true);
 		} finally {
 			composer.stop();
+		}
+	});
+
+	it("claims no inline capture and draws no controls while the pointer layer is off", () => {
+		const term = new VirtualTerminal(80, 40);
+		const composer = new Composer({ terminal: term, preferences: { quiet: true } });
+		setTranscriptActionHandler(() => {});
+		setTranscriptMouseEnabled(false);
+		try {
+			composer.ui.setInlineMouseTrackingProvider(() => composer.hasInlineClickTargets());
+			composer.start();
+			const transcript = new TranscriptContainer();
+			const assistant = new AssistantMessageComponent();
+			assistant.updateContent(tableMessage(firstTable));
+			transcript.addChild(assistant);
+			composer.setRuntimeChildren([transcript]);
+			composer.ui.renderNow();
+			expect(composer.hasInlineClickTargets()).toBe(false);
+			expect(composer.ui.isInlineMouseTrackingActive()).toBe(false);
+			const frame = composer.renderFrame({ columns: 80, rows: 40 });
+			expect(frame.viewport.join("\n")).not.toContain("[Copy TSV]");
+		} finally {
+			composer.stop();
+			setTranscriptMouseEnabled(true);
 		}
 	});
 

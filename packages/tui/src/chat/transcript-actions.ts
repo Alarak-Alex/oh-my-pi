@@ -41,3 +41,20 @@ export function runTranscriptAction(action: TranscriptAction, options?: Transcri
 export function hasTranscriptActions(): boolean {
 	return handler !== undefined;
 }
+
+let transcriptMouse = false;
+
+/**
+ * Enable the host's transcript pointer layer in classic terminals: drag
+ * selection, wheel browsing, and the inline table copy controls. Off unless the
+ * user opts in, because terminal mouse reporting takes native selection and
+ * scrollback away from the terminal.
+ */
+export function setTranscriptMouseEnabled(enabled: boolean): void {
+	transcriptMouse = enabled;
+}
+
+/** Whether the host routes transcript pointer gestures in classic terminals. */
+export function isTranscriptMouseEnabled(): boolean {
+	return transcriptMouse;
+}

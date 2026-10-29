@@ -23,7 +23,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
-import { cfgTuiMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { cfgTuiMouse, cfgTuiTranscriptMouse } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { setNativeRendering } from "@oh-my-pi/pi-tui/native/state";
 
 function plainRows(rows: readonly string[]): string[] {
@@ -656,6 +656,7 @@ describe("inline click-to-focus geometry", () => {
 
 	it("keeps the real host transcript, epoch and editor position unchanged after repeated pointer copies", async () => {
 		const copy = vi.spyOn(clipboard, "copyToClipboard").mockResolvedValue(undefined);
+		cfgTuiTranscriptMouse.set(mode.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		void mode.getUserInput();
 		await term.waitForRender();

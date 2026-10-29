@@ -21,7 +21,7 @@ import {
 	mathStartIndex,
 } from "@oh-my-pi/pi-utils/math-delimiters";
 import { listMayContinueAt } from "@oh-my-pi/pi-utils/marked-list";
-import { hasTranscriptActions, runTranscriptAction } from "../chat/transcript-actions";
+import { hasTranscriptActions, isTranscriptMouseEnabled, runTranscriptAction } from "../chat/transcript-actions";
 import { latexToBlock } from "../latex-block";
 import { isBareMathEnvironment, latexToUnicode } from "../latex-to-unicode";
 import type { InlineControl, InlineControlResolver } from "../mouse";
@@ -3070,7 +3070,7 @@ export class Markdown implements Component {
 	}
 
 	render(width: number): readonly string[] {
-		const tableCopy = hasTranscriptActions();
+		const tableCopy = this.#inlineControls();
 		if (this.#renderTableCopy !== tableCopy) {
 			this.#renderTableCopy = tableCopy;
 			this.releaseRenderCaches();
@@ -3107,10 +3107,15 @@ export class Markdown implements Component {
 		return rows;
 	}
 
+	/** Classic inline controls need both a clipboard host and the host's transcript pointer layer. */
+	#inlineControls(): boolean {
+		return hasTranscriptActions() && isTranscriptMouseEnabled();
+	}
+
 	/** A snapshot of the last painted table controls; never redirects stale cell coordinates after a redraw. */
 	getInlineControlResolver(width: number): InlineControlResolver | undefined {
 		const frame = this.#inlineTableFrame;
-		if (!frame || frame.width !== width || frame.source !== this.#text || !hasTranscriptActions()) return undefined;
+		if (!frame || frame.width !== width || frame.source !== this.#text || !this.#inlineControls()) return undefined;
 		if (frame.resolveControl) return frame.resolveControl;
 		const tabbed = this.#text.includes("\t") ? replaceTabs(this.#text) : this.#text;
 		const tokens = lexDocument(this.#transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed));
@@ -3135,7 +3140,7 @@ export class Markdown implements Component {
 				activate: () =>
 					this.#inlineTableFrame === frame &&
 					frame.source === this.#text &&
-					hasTranscriptActions() &&
+					this.#inlineControls() &&
 					runTranscriptAction(
 						{ act: "copy", text: formatTableForClipboard(table, region.format) },
 						{ quiet: true },
@@ -3146,7 +3151,7 @@ export class Markdown implements Component {
 			if (
 				this.#inlineTableFrame !== frame ||
 				frame.source !== this.#text ||
-				!hasTranscriptActions() ||
+				!this.#inlineControls() ||
 				!Number.isInteger(column) ||
 				!Number.isInteger(row)
 			)

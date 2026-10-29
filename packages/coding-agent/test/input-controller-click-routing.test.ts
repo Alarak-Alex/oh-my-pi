@@ -3,7 +3,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { Text } from "@oh-my-pi/pi-tui";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
-import { setTranscriptActionHandler } from "@oh-my-pi/pi-tui/chat/transcript-actions";
+import { setTranscriptActionHandler, setTranscriptMouseEnabled } from "@oh-my-pi/pi-tui/chat/transcript-actions";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { Composer, PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -54,6 +54,7 @@ function makeHarness() {
 	setTranscriptActionHandler(action => {
 		if (action.act === "copy") copied.push(action.text);
 	});
+	setTranscriptMouseEnabled(true);
 	composer.ui.setInlineMouseTrackingProvider(() => cfgTuiMouse.get(settings) || composer.hasInlineClickTargets());
 	const transcript = new TranscriptContainer();
 	transcript.addChild(new AgentCard("agent card", 0, 0));
@@ -115,6 +116,7 @@ beforeEach(async () => {
 afterEach(() => {
 	for (const scene of scenes.splice(0)) scene.stop();
 	setTranscriptActionHandler(undefined);
+	setTranscriptMouseEnabled(false);
 	AgentRegistry.resetGlobalForTests();
 	resetSettingsForTest();
 });

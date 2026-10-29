@@ -1,7 +1,7 @@
 import { getComposerStyle } from "../components/composer/registry";
 import { Spacer } from "../components/spacer";
 import { TranscriptSelection, type TranscriptSelectionResult } from "../components/transcript-selection";
-import { hasTranscriptActions, runTranscriptAction } from "../chat/transcript-actions";
+import { hasTranscriptActions, isTranscriptMouseEnabled, runTranscriptAction } from "../chat/transcript-actions";
 import {
 	type InlineControl,
 	type InlineControlResolver,
@@ -467,13 +467,19 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return this.#rowsBelow.get(root);
 	}
 
+	/** Transcript pointer gestures need a clipboard host and the user's opt-in. */
+	#pointerEnabled(): boolean {
+		return hasTranscriptActions() && isTranscriptMouseEnabled();
+	}
+
 	/** Compose the bounded mutable viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
+		const pointer = this.#pointerEnabled();
 		if (
-			!hasTranscriptActions() ||
+			!pointer ||
 			this.ui.hasOverlay() ||
 			(this.#nativeHistoryRows.length > 0 && this.ui.getVisibleProviderHistory() !== this.#nativeHistoryRows) ||
 			(this.#lastClickSize !== undefined &&
@@ -555,8 +561,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// the `drop` slice below; they stay live until the chrome shrinks. With
 		// `completeScrollback` none are held back.
 		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - belowFloor), frame);
-		this.#nativeHistoryRows =
-			hasTranscriptActions() && history === undefined ? this.ui.getVisibleProviderHistory() : [];
+		this.#nativeHistoryRows = pointer && history === undefined ? this.ui.getVisibleProviderHistory() : [];
 		this.#historyViewportRows = this.#nativeHistoryRows;
 		const historySnapshot =
 			this.#historyViewportRows.length > 0 && transcript.hasRetiredRows()
@@ -664,7 +669,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		// A restored, fully retired transcript has no native paint to select yet.
 		if (
 			!this.#historyFlush &&
-			hasTranscriptActions() &&
+			pointer &&
 			history === undefined &&
 			!this.ui.hasProviderHistory() &&
 			active.length === 0 &&
@@ -1100,21 +1105,23 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		return routeViewportClick(this.#lastClickSpans, index);
 	}
 
-	/** Transcript text and committed history need ordinary pointer reports too. */
+	/** Whether this transcript owns ordinary pointer reports from the terminal. */
 	hasInlineClickTargets(): boolean {
 		return (
-			this.#started && !this.#stopped && hasTranscriptActions() && (this.#mouseTranscript?.children.length ?? 0) > 0
+			this.#started && !this.#stopped && this.#pointerEnabled() && (this.#mouseTranscript?.children.length ?? 0) > 0
 		);
 	}
 
 	/** Route mutable-viewport coordinates without re-rendering for hit testing. */
 	handleTranscriptMouse(event: SgrMouseEvent): TranscriptSelectionResult {
+		// `tui.mouse`-only capture still uses the frame's spans for hover and focus;
+		// leaving them intact keeps a plain SGR report from clearing that state.
+		if (!this.#pointerEnabled()) return { handled: false };
 		const transcript = this.#mouseTranscript;
 		if (
 			!this.#started ||
 			this.#stopped ||
 			this.ui.hasOverlay() ||
-			!hasTranscriptActions() ||
 			(this.#nativeHistoryRows.length > 0 && this.ui.getVisibleProviderHistory() !== this.#nativeHistoryRows) ||
 			this.#lastClickSize?.columns !== this.ui.terminal.columns ||
 			this.#lastClickSize.rows !== this.ui.terminal.rows ||
